@@ -1,0 +1,94 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+type Role = "user" | "assistant";
+
+interface ChatMessage {
+  role: Role;
+  content: string;
+}
+
+interface ARCChatProps {
+  onFocusDetected?: (focus: string) => void;
+}
+
+export default function ARCChat({ onFocusDetected }: ARCChatProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  function inferFocus(text: string) {
+    return text.split(/[.!?]/)[0]?.slice(0, 120);
+  }
+
+  async function handleSend() {
+    const text = input.trim();
+    if (!text) return;
+
+    const nextMessages = [...messages, { role: "user", content: text }];
+    setMessages(nextMessages);
+    setInput("");
+
+    const focus = inferFocus(text);
+    if (focus && onFocusDetected) {
+      onFocusDetected(focus);
+    }
+
+    const res = await fetch("/api/arc/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        intention: text,
+        history: nextMessages,
+      }),
+    });
+
+    const data = await res.json();
+
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: data.reply },
+    ]);
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col px-1 text-[13px]">
+        <div className="flex-1" />
+
+        {messages.map((m, i) => (
+          <div
+            key={i}
+            className={`p-2 rounded-md max-w-[90%] mb-2 whitespace-pre-line ${
+              m.role === "user"
+                ? "self-end bg-[#D8C5A3] text-black"
+                : "self-start bg-[#F1D7B6] text-[#4A331D]"
+            }`}
+          >
+            {m.content}
+          </div>
+        ))}
+
+        <div ref={bottomRef} />
+      </div>
+
+      <input
+        className="border rounded p-2 mt-3 text-black"
+        placeholder="Talk to ARC..."
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            handleSend();
+          }
+        }}
+      />
+    </div>
+  );
+}
