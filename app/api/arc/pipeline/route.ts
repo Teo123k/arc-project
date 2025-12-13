@@ -1,13 +1,25 @@
-import { NextResponse } from "next/server";
-import { runIntentionPipeline } from "@/app/arc-system/engine";
+export const runtime = "nodejs";
 
-export async function POST(request: Request) {
-  try {
-    const body = await request.json();
-    const result = await runIntentionPipeline(body);
-    return NextResponse.json({ success: true, result });
-  } catch (error) {
-    console.error("ARC Pipeline Error:", error);
-    return NextResponse.json({ success: false, error });
-  }
+import { NextResponse } from "next/server";
+
+export async function POST() {
+  return NextResponse.json(
+    {
+      ok: true,
+      note:
+        "Pipeline endpoint temporarily stubbed to keep dev server stable. Restore logic later.",
+    },
+    { status: 200 }
+  );
+}
+
+export async function GET() {
+  return NextResponse.json(
+    {
+      ok: true,
+      note:
+        "Pipeline endpoint temporarily stubbed to keep dev server stable. Use POST later.",
+    },
+    { status: 200 }
+  );
 }

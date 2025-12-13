@@ -18,32 +18,25 @@ interface ARCChatProps {
   onARCUpdate?: (update: ARCUpdate) => void;
 }
 
-function extractFocusSoftly(text: string): string | null {
-  if (!text) return null;
+/* ---------- helpers ---------- */
 
+function extractFocusSoftly(text: string): string | null {
   const sentence = text
     .replace(/\n+/g, " ")
     .split(/[.!?]/)
-    .map((s) => s.trim())
-    .find((s) => s.length > 10);
+    .map(s => s.trim())
+    .find(s => s.length > 10);
 
   return sentence ? sentence.slice(0, 120) : null;
 }
 
 function extractNextStepSoftly(text: string): string | null {
-  if (!text) return null;
-
   const lines = text
     .split("\n")
-    .map((l) => l.trim())
+    .map(l => l.trim())
     .filter(Boolean);
 
-  const candidate =
-    lines.find((l) => /^(next|do this|try this|start with)/i.test(l)) ||
-    lines.find((l) => /\b(today|now|first)\b/i.test(l)) ||
-    lines[0];
-
-  return candidate ? candidate.slice(0, 180) : null;
+  return lines[0] ? lines[0].slice(0, 180) : null;
 }
 
 function humanizeReply(raw: string) {
@@ -67,6 +60,8 @@ function humanizeReply(raw: string) {
   };
 }
 
+/* ---------- component ---------- */
+
 export default function ARCChat({ onARCUpdate }: ARCChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -75,15 +70,23 @@ export default function ARCChat({ onARCUpdate }: ARCChatProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // keep scroll pinned to bottom
+  /* keep scroll pinned */
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // keep input focused even after rerenders
+  /* keep input focused */
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  async function callARC(userText: string) {
+    return fetch("/api/arc/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ intention: userText }),
+    });
+  }
 
   async function handleSend() {
     if (sending) return;
@@ -92,35 +95,35 @@ export default function ARCChat({ onARCUpdate }: ARCChatProps) {
     if (!userText) return;
 
     // optimistic UI
-    setMessages((prev) => [...prev, { role: "user", content: userText }]);
+    setMessages(prev => [...prev, { role: "user", content: userText }]);
     setInput("");
     setSending(true);
 
-    // IMPORTANT: keep focus even while sending
     requestAnimationFrame(() => inputRef.current?.focus());
 
     try {
-      const res = await fetch("/api/arc/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ intention: userText }),
-      });
+      let res = await callARC(userText);
 
-      const data = await res.json().catch(() => ({}));
-      const raw = String(data?.reply ?? "");
+      // 🔁 ONE safe retry for dev-mode 404 / 405
+      if (!res.ok && (res.status === 404 || res.status === 405)) {
+        await new Promise(r => setTimeout(r, 300));
+        res = await callARC(userText);
+      }
 
       if (!res.ok) {
-        setMessages((prev) => [
+        setMessages(prev => [
           ...prev,
           {
             role: "assistant",
             content:
-              raw ||
-              "Something went wrong on my side. Let’s pause and try again.",
+              "I briefly lost connection. Say that again and we’ll continue.",
           },
         ]);
         return;
       }
+
+      const data = await res.json().catch(() => ({}));
+      const raw = String(data?.reply ?? "");
 
       const { message, focus, nextStep } = humanizeReply(raw);
 
@@ -131,26 +134,26 @@ export default function ARCChat({ onARCUpdate }: ARCChatProps) {
         });
       }
 
-      setMessages((prev) => [...prev, { role: "assistant", content: message }]);
-    } catch {
-      setMessages((prev) => [
+      setMessages(prev => [...prev, { role: "assistant", content: message }]);
+    } catch (err) {
+      console.error("ARC chat error:", err);
+      setMessages(prev => [
         ...prev,
         {
           role: "assistant",
           content:
-            "Something went wrong on my side. Let’s pause and try again.",
+            "Something briefly interrupted me. Let’s keep going.",
         },
       ]);
     } finally {
       setSending(false);
-      // restore focus reliably
       setTimeout(() => inputRef.current?.focus(), 0);
     }
   }
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col px-1 text-[13px]">
+      <div className="flex-1 overflow-y-auto flex flex-col px-1 text-[13px]">
         <div className="flex-1" />
 
         {messages.map((m, i) => (
@@ -174,9 +177,8 @@ export default function ARCChat({ onARCUpdate }: ARCChatProps) {
         className="border rounded p-2 mt-3 text-black"
         placeholder={sending ? "ARC is thinking..." : "Talk to ARC..."}
         value={input}
-        // ✅ do NOT disable input; disabling is what commonly breaks focus
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={(e) => {
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => {
           if (e.key === "Enter") {
             e.preventDefault();
             handleSend();

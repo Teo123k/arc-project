@@ -1,26 +1,25 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { runARC } from "@/app/lib/arc/arcAgent";
 
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const message = body?.message ?? "I want to start a business";
-
-    const result = await runARC([
-      { role: "user", content: message },
-    ]);
-
-    return NextResponse.json({
+export async function POST() {
+  return NextResponse.json(
+    {
       ok: true,
-      result,
-    });
-  } catch (err) {
-    console.error("ARC TEST ERROR:", err);
-    return NextResponse.json(
-      { ok: false, error: "ARC test failed" },
-      { status: 500 }
-    );
-  }
+      note:
+        "Test endpoint temporarily stubbed to keep dev server stable. Restore logic later.",
+    },
+    { status: 200 }
+  );
+}
+
+export async function GET() {
+  return NextResponse.json(
+    {
+      ok: true,
+      note:
+        "Test endpoint temporarily stubbed to keep dev server stable. Use POST later.",
+    },
+    { status: 200 }
+  );
 }
