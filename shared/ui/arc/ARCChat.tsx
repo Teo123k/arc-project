@@ -55,6 +55,17 @@ function humanizeReply(raw: string) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+  // Soften overly formal or system-like opening phrases
+  text = text.replace(
+    /^(Sure\.?|Certainly\.?|Of course\.?|Absolutely\.?|Let's begin\.?|Let us begin\.?|Here's the plan\.?|Here is the plan\.?)/i,
+    ""
+  );
+
+  // Normalize casual human openings
+  text = text.replace(/^(Hi\.?|Hello\.?|Hey\.?)\s+/i, "Hey — ");
+
+  text = text.trim();
+
   // Remove common robotic openers that repeat across replies
   text = text.replace(
     /^(Alright|Okay|Sure|Let's)\b[^\n]*\n?/i,
@@ -78,7 +89,7 @@ function humanizeReply(raw: string) {
 
   return {
     message:
-      text || "Let's take this one step at a time.",
+      text || "Hey — what's on your mind?",
     focus: extractFocusSoftly(clean),
     nextStep: extractNextStepSoftly(clean),
   };
