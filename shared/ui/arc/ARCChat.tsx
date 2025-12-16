@@ -40,7 +40,15 @@ function extractNextStepSoftly(text: string): string | null {
 }
 
 function humanizeReply(raw: string) {
-  const clean = (raw || "").trim();
+  if (!raw) {
+    return {
+      message: "",
+      focus: null,
+      nextStep: null,
+    };
+  }
+
+  const clean = raw.trim();
 
   let text = clean
     .replace(/^(FOCUS|DECISION|PLAN|NEXT|CHAT):?/gim, "")
