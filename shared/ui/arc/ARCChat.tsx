@@ -42,19 +42,35 @@ function extractNextStepSoftly(text: string): string | null {
 function humanizeReply(raw: string) {
   const clean = (raw || "").trim();
 
-  const stripped = clean
-    .replace(/^FOCUS:.*$/gim, "")
-    .replace(/^DECISION:.*$/gim, "")
-    .replace(/^PLAN:.*$/gim, "")
-    .replace(/^STEPS:.*$/gim, "")
-    .replace(/^NEXT:.*$/gim, "")
-    .replace(/^CHAT:\s*/gim, "")
+  let text = clean
+    .replace(/^(FOCUS|DECISION|PLAN|NEXT|CHAT):?/gim, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  // Remove common robotic openers that repeat across replies
+  text = text.replace(
+    /^(Alright|Okay|Sure|Let's)\b[^\n]*\n?/i,
+    ""
+  );
+
+  // De-duplicate repeated sentences (exact or near-exact)
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+
+  for (const s of sentences) {
+    const key = s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(s);
+    }
+  }
+
+  text = deduped.join(" ").trim();
 
   return {
     message:
-      stripped ||
-      "Okay — tell me what you’re trying to get done, and I’ll guide you.",
+      text || "Let's take this one step at a time.",
     focus: extractFocusSoftly(clean),
     nextStep: extractNextStepSoftly(clean),
   };
