@@ -3,11 +3,14 @@ export const runtime = "nodejs";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { buildARCSystemPrompt } from "@/app/lib/arc/buildSystemPrompt";
+import { getPersonalContext, hasPersonalContext } from "@/app/lib/arc/personalContext";
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
 
 export async function POST(req: Request) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -18,50 +21,42 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const intention = String(body?.intention ?? "").trim();
-
-    const systemPrompt = buildARCSystemPrompt();
+    const messages: ChatMessage[] = body?.messages ?? [];
 
     const client = new OpenAI({ apiKey });
 
-    const completion = await client.chat.completions.create(
-      {
-        model: "gpt-4o-mini",
-        temperature: 0.6,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: intention || "I'm here." },
-        ],
-      },
-      { signal: controller.signal }
-    );
+    const finalMessages: ChatMessage[] = [
+      { role: "system", content: buildARCSystemPrompt() }
+    ];
+
+    if (hasPersonalContext()) {
+      finalMessages.push({
+        role: "system",
+        content:
+          "USER CONTEXT (INTERNAL): " +
+          JSON.stringify(getPersonalContext()) +
+          ". ARC must factor this into decisions and recommendations."
+      });
+    }
+
+    finalMessages.push(...messages);
+
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.55,
+      messages: finalMessages,
+    });
 
     const reply =
       completion.choices[0]?.message?.content?.trim() ??
-      "I’m here. Let’s keep going.";
+      "Let’s move forward.";
 
     return NextResponse.json({ reply });
-  } catch (err: any) {
-    if (err.name === "AbortError") {
-      return NextResponse.json(
-        {
-          reply:
-            "I’m here. That took longer than expected. Try sending that again.",
-        },
-        { status: 504 }
-      );
-    }
-
+  } catch (err) {
     console.error("ARC API ERROR:", err);
-
     return NextResponse.json(
-      {
-        reply:
-          "Something went wrong on my side. Let’s pause for a moment and try again.",
-      },
+      { reply: "Something went wrong. Try again." },
       { status: 500 }
     );
-  } finally {
-    clearTimeout(timeout);
   }
 }

@@ -1,0 +1,72 @@
+{
+  "version": "1.1",
+  "purpose": "Safety and governance map for ARC reviewer system",
+
+  "zones": {
+    "ZONE_CORE": {
+      "description": "Critical system logic, routing, and configuration. Changes here can alter behavior, security, or data flow.",
+      "rules": [
+        "Changes are NOT allowed without explicit override",
+        "Prefer rejection over modification",
+        "Never refactor for tone, style, or readability"
+      ],
+      "restricted_paths": [
+        "app/api/",
+        "arc-system/",
+        "lib/arc/",
+        "src/arc/",
+        "middleware.ts",
+        "middleware.disabled.ts",
+        "next.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "eslint.config.mjs"
+      ]
+    },
+
+    "ZONE_OUTPUT": {
+      "description": "User-facing UI and text. Logic and intent must remain unchanged.",
+      "rules": [
+        "Tone, wording, and formatting may be adjusted",
+        "Must not change behavior, intent, or data flow",
+        "No side effects, no branching logic"
+      ],
+      "allowed_paths": [
+        "app/(dashboard)/",
+        "app/(auth)/",
+        "app/components/",
+        "components/",
+        "shared/",
+        "lib/output/",
+        "lib/text/",
+        "lib/humanize/"
+      ]
+    },
+
+    "ZONE_DEV": {
+      "description": "Development-only files, backups, and tools not used in production runtime.",
+      "rules": [
+        "Changes allowed",
+        "Must not be imported into production code",
+        "Must not affect application behavior"
+      ],
+      "allowed_paths": [
+        "scripts/",
+        "arc/dev/",
+        "tests/",
+        "__tests__/",
+        "dev/",
+        "**/*.backup.*",
+        "**/*backup*/"
+      ]
+    }
+  },
+
+  "reviewer_instructions": [
+    "Reject any proposal that modifies ZONE_CORE unless explicitly overridden",
+    "Approve ZONE_OUTPUT changes if intent and logic remain unchanged",
+    "ZONE_DEV changes are allowed but must stay isolated",
+    "If a proposal spans multiple zones, default to SAFE: NO",
+    "Prefer minimal, reversible changes"
+  ]
+}

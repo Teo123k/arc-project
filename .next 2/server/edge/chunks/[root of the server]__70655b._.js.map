@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 23, "column": 0}, "map": {"version":3,"sources":["turbopack://[project]/middleware.ts"],"sourcesContent":["import type { NextRequest } from \"next/server\";\nimport { NextResponse } from \"next/server\";\n\nexport function middleware(req: NextRequest) {\n  return NextResponse.next();\n}\n\nexport const config = {\n  matcher: [\n    \"/((?!_next/static|_next/image|favicon.ico|.*\\\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)\",\n  ],\n};\n"],"names":[],"mappings":";;;;AACA;AAAA;;AAEO,SAAS,WAAW,GAAgB;IACzC,OAAO,qLAAA,CAAA,eAAY,CAAC,IAAI;AAC1B;AAEO,MAAM,SAAS;IACpB,SAAS;QACP;KACD;AACH"}},
+    {"offset": {"line": 38, "column": 0}, "map": {"version":3,"sources":[],"names":[],"mappings":"A"}}]
+}

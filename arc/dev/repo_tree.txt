@@ -1,0 +1,170 @@
+.
+├── README.md
+├── app
+│   ├── (auth)
+│   │   ├── actions.ts
+│   │   ├── auth
+│   │   │   └── confirm
+│   │   │       └── route.ts
+│   │   ├── error
+│   │   │   └── page.tsx
+│   │   ├── layout.tsx
+│   │   ├── login
+│   │   │   ├── login-form.tsx
+│   │   │   └── page.tsx
+│   │   └── register
+│   │       ├── page.tsx
+│   │       └── register-form.tsx
+│   ├── (dashboard)
+│   │   ├── dashboard
+│   │   │   ├── Page backup
+│   │   │   │   ├── page.backup.tsx
+│   │   │   │   ├── page.before-tools-patch.tsx
+│   │   │   │   ├── page.broken.backup.tsx
+│   │   │   │   └── page_backup_before_patch.tsx
+│   │   │   ├── components
+│   │   │   │   ├── ARCActionCard.tsx
+│   │   │   │   ├── ARCStepCard.tsx
+│   │   │   │   ├── ActionStream.tsx
+│   │   │   │   ├── CompletedCard.tsx
+│   │   │   │   ├── FloatingAddButton.tsx
+│   │   │   │   ├── GridBackground.tsx
+│   │   │   │   ├── InputBar.tsx
+│   │   │   │   ├── InsightCard.tsx
+│   │   │   │   ├── MobileActionFab.tsx
+│   │   │   │   ├── PriorityBar.tsx
+│   │   │   │   ├── RecommendationCard.tsx
+│   │   │   │   ├── Sidebar.tsx
+│   │   │   │   ├── WidgetBoard.dnd.backup.tsx
+│   │   │   │   ├── WidgetBoard.tsx
+│   │   │   │   ├── WidgetBoard_backup_before_patch.tsx
+│   │   │   │   ├── canvas
+│   │   │   │   └── widgets
+│   │   │   ├── page backup-frameOnly.tsx
+│   │   │   └── page.tsx
+│   │   └── layout.tsx
+│   ├── api
+│   │   ├── arc
+│   │   │   ├── chat
+│   │   │   │   └── route.ts
+│   │   │   ├── pipeline
+│   │   │   │   └── route.ts
+│   │   │   └── test
+│   │   │       └── route.ts
+│   │   └── intention
+│   │       └── capture
+│   │           └── route.ts
+│   ├── components
+│   ├── favicon.ico
+│   ├── globals.css
+│   ├── layout.tsx
+│   ├── lib
+│   │   └── arc
+│   │       ├── arcAgent.ts
+│   │       ├── arcState.ts
+│   │       ├── buildSystemPrompt.ts
+│   │       ├── decisionRules.ts
+│   │       ├── index.ts
+│   │       ├── personalContext.ts
+│   │       └── prompts
+│   │           ├── ARC API Integration Framework (V1).md
+│   │           ├── ARC Agent Training & Internal Reasoning Protocol — V1.md
+│   │           ├── ARC App Structure & Module Layout (V1).md
+│   │           ├── ARC BuildBluePrint.md
+│   │           ├── ARC Business Model & Monetization Strategy (V1).md
+│   │           ├── ARC MVP Build Roadmap (90-Day Execution Plan — V1).md
+│   │           ├── ARC Risk, Ethics & Safeguard Protocol (V1).md
+│   │           ├── ARC User Journey & Onboarding Narrative (V1).md
+│   │           ├── ARC_Agent_Personality_and_Communication_Guide_V1.md
+│   │           ├── ARC_Identity_Document_V1.md
+│   │           ├── ARC_Problem_and_Solution_Framework_V1.md
+│   │           ├── ARC_System_Core.md
+│   │           └── 📄 ARC UX & INTERFACE BLUEPRINT — V1.md
+│   ├── not-found.tsx
+│   └── page.tsx
+├── arc
+│   └── dev
+│       ├── REPO_MAP.json
+│       └── repo_tree.txt
+├── arc-system
+│   ├── chat
+│   │   └── page.tsx
+│   ├── components
+│   │   └── ArcOutput.tsx
+│   ├── db
+│   │   └── save-intention.ts
+│   ├── engine
+│   │   ├── action-engine.ts
+│   │   ├── friction-engine.ts
+│   │   ├── index.ts
+│   │   ├── intention-engine.ts
+│   │   ├── priority-engine.ts
+│   │   └── types.ts
+│   ├── intent
+│   │   └── page.tsx
+│   ├── page.tsx
+│   └── test
+│       └── page.tsx
+├── bun.lock
+├── components
+│   ├── query-provider.tsx
+│   ├── ui
+│   │   ├── avatar.tsx
+│   │   ├── button.tsx
+│   │   ├── card.tsx
+│   │   ├── dropdown-menu.tsx
+│   │   ├── form.tsx
+│   │   ├── icons.tsx
+│   │   ├── input.tsx
+│   │   ├── label.tsx
+│   │   ├── password-input.tsx
+│   │   ├── separator.tsx
+│   │   └── sonner.tsx
+│   └── user-auth-state.tsx
+├── components.json
+├── eslint.config.mjs
+├── hooks
+│   ├── use-client-fetch.ts
+│   └── use-client-mutation.ts
+├── lib
+│   ├── auth-context.tsx
+│   └── utils.ts
+├── middleware.disabled.ts
+├── next-env.d.ts
+├── next.config.ts
+├── package-lock.json
+├── package.json
+├── postcss.config.mjs
+├── public
+│   ├── file.svg
+│   ├── globe.svg
+│   ├── next.svg
+│   ├── vercel.svg
+│   └── window.svg
+├── review.mjs
+├── scripts
+│   └── review.mjs
+├── shared
+│   └── ui
+│       └── arc
+│           ├── ARCActionPanel.tsx
+│           ├── ARCChat.tsx
+│           ├── ARCChat1.bak
+│           ├── ARCChatMessages.tsx
+│           ├── ARCPriorityCard.tsx
+│           └── ARCQueue.tsx
+├── src
+│   ├── app
+│   │   └── api
+│   └── types
+│       └── supabase.ts
+├── supabase
+│   ├── client.ts
+│   ├── middleware.supabase.ts
+│   ├── migrations
+│   │   └── 001_create_arc_intentions.sql
+│   └── server.ts
+├── tailwind.config.ts
+└── tsconfig.json
+
+49 directories, 119 files
