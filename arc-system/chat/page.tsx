@@ -27,16 +27,7 @@ export default function ARCChatPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages: [
-          {
-            role: "system",
-            content: `The user intent is: ${intent}. Proceed directly with guidance. Do not ask intake questions.`,
-          },
-          {
-            role: "user",
-            content: intent,
-          },
-        ],
+        messages: [{ role: "user", content: intent }],
       }),
     })
 

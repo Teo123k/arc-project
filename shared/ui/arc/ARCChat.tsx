@@ -119,7 +119,11 @@ export default function ARCChat({ onARCUpdate }: ARCChatProps) {
     return fetch("/api/arc/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ intention: userText }),
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: userText }
+        ],
+      }),
     });
   }
 
