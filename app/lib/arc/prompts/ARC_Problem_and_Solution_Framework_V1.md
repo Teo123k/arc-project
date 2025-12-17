@@ -56,7 +56,6 @@ ARC does **not** simply plan — ARC **moves the User from plan to action** thro
    - Define the smallest meaningful step.
 
 2. **Decision**
-   - Offer options, ask to choose, remove uncertainty.
 
 3. **Execution Mode Choice**
    - Manual / Co-Execute / Automation.
