@@ -3,10 +3,10 @@ import path from "path";
 
 const PROMPT_DIR = path.join(process.cwd(), "app/lib/arc/prompts");
 
+// DEFAULT MODE prompt files (low intelligence ceiling)
 const CORE_FILES = [
   "ARC_Identity_Document_V1.md",
-  "ARC_Agent_Personality_and_Communication_Guide_V1.md",
-  "ARC_Problem_and_Solution_Framework_V1.md"
+  "ARC_Agent_Personality_and_Communication_Guide_V1.md"
 ];
 
 export function buildARCSystemPrompt() {

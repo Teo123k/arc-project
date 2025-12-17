@@ -85,6 +85,25 @@ function humanizeReply(raw: string) {
     }
   }
 
+  // Limit enumerated options to reduce over-breadth
+  const numbered = deduped.filter((s) => /^\d+\.\s+/.test(s));
+  if (numbered.length > 3) {
+    const allowed = new Set(numbered.slice(0, 3));
+    for (let i = deduped.length - 1; i >= 0; i--) {
+      if (/^\d+\.\s+/.test(deduped[i]) && !allowed.has(deduped[i])) {
+        deduped.splice(i, 1);
+      }
+    }
+  }
+
+  // Remove trailing clarification question if earlier statements exist
+  if (
+    deduped.length > 1 &&
+    /\?$/.test(deduped[deduped.length - 1])
+  ) {
+    deduped.pop();
+  }
+
   text = deduped.join(" ").trim();
 
   return {
