@@ -1,95 +1,88 @@
-import fs from "fs";
-import dotenv from "dotenv";
+import "dotenv/config";
 import OpenAI from "openai";
+import fs from "fs";
 
-// Load .env from project root
-dotenv.config({ path: new URL("../.env", import.meta.url).pathname });
-
-// Fail fast on missing env
-if (!process.env.REVIEW_API_KEY) {
-  throw new Error("REVIEW_API_KEY is NOT loaded");
-}
-if (!process.env.REVIEW_BASE_URL) {
-  throw new Error("REVIEW_BASE_URL is NOT loaded");
-}
-if (!process.env.REVIEW_MODEL) {
-  throw new Error("REVIEW_MODEL is NOT loaded");
-}
-
-console.log("Reviewer script started");
-
-// Init client
 const client = new OpenAI({
   apiKey: process.env.REVIEW_API_KEY,
-  baseURL: process.env.REVIEW_BASE_URL,
+  baseURL: process.env.REVIEW_BASE_URL
 });
 
-// Read stdin
-const input = fs.readFileSync(0, "utf8").trim();
-if (!input) {
-  throw new Error("No input provided to reviewer");
-}
+const model = process.env.REVIEW_MODEL;
 
-// Read repo map
+// Read input (plan or code) from stdin
+const input = fs.readFileSync(0, "utf8");
+
+// Read repo context
 const repoMap = fs.readFileSync("arc/dev/REPO_MAP.json", "utf8");
 
-// Call model
-const response = await client.responses.create({
-  model: process.env.REVIEW_MODEL,
-  input: [
+const response = await client.chat.completions.create({
+  model,
+  temperature: 0.2,
+  messages: [
     {
       role: "system",
       content: `
-You are a strict senior software reviewer.
+You are an invariant-focused reviewer for the ARC system.
 
-Rules:
-- Enforce REPO_MAP.json strictly
-- Prefer removing code over adding
-- Identify root causes, not symptoms
-- Flag scope creep immediately
-- Be concise, no encouragement
+Your role is to protect ARC’s core foundations while producing STRICT, ACTIONABLE
+constraints that another GPT will follow when writing code.
 
-The system defines three change zones:
+ARC CORE FOUNDATION (PROTECTED — MUST NOT CHANGE):
+- Intent detection and classification
+- Safety and moderation rules
+- State transitions and memory updates
+- Action execution or side effects
 
-ZONE_CORE (Protected):
-- Planning, decision, safety, and intent logic.
-- Changes are NOT allowed without explicit override.
+ALLOWED WITHOUT ESCALATION:
+- Output-only changes (text, tone, phrasing)
+- Response formatting and summaries
+- Conversation termination / closure wording
+- UX changes that do not affect decisions or state
 
-ZONE_OUTPUT (Permitted):
-- User-facing phrasing, tone, formatting, and natural language adjustments.
-- Changes are allowed if they do not alter intent, logic, or structure.
+REVIEW PRINCIPLES:
+- Judge changes by behavioral impact, NOT by file name or folder
+- Classify changes conservatively
+- If new logic, conditionals, state writes, or safety changes are implied → mark unsafe
+- Prefer removal over addition
+- Be explicit and concrete; avoid vague advice
+- Do not restate the proposal
 
-ZONE_DEV (Experimental):
-- Dev-only tools, scripts, and layers not used in production.
+OUTPUT CONTRACT (MUST FOLLOW EXACTLY — NO EXTRA TEXT):
 
-The reviewer may approve changes in ZONE_OUTPUT and ZONE_DEV without treating them as production code modifications.
+CLASSIFICATION:
+- OUTPUT_ONLY | STRUCTURAL | LOGIC_AFFECTING | SAFETY_AFFECTING
 
-Return EXACTLY this format:
+SAFE_TO_IMPLEMENT:
+- YES | NO | YES_WITH_CONSTRAINTS
 
-SAFE: YES/NO
-TOP_ISSUES:
-- ...
-MINIMAL_FIX:
-- ...
-RISKS:
-- ...
+IMPLEMENTATION_CONSTRAINTS:
+- <explicit rules the coding GPT must obey>
+
+FILES_ALLOWED:
+- <exact file paths, or "ANY (output-only changes only)">
+
+FILES_FORBIDDEN:
+- <files or subsystems that must not be touched>
+
+INVARIANTS:
+- <behaviors that must remain unchanged>
+
+IF_BLOCKED_REASON:
+- <single sentence, or "N/A">
+
+SAFE_ALTERNATIVE:
+- <allowed alternative, or "N/A">
 `
     },
     {
       role: "user",
-      content:
-        "REPO_MAP.json:\n" +
-        repoMap +
-        "\n\nCONTENT TO REVIEW:\n" +
-        input
+      content: `REPO_MAP.json:
+${repoMap}
+
+CONTENT TO REVIEW:
+${input}`
     }
   ]
 });
 
-// Output safely
-const output =
-  response.output_text ??
-  response.output?.map(o => o.content?.[0]?.text).join("\n") ??
-  "NO OUTPUT";
-
-console.log(output);
+console.log(response.choices[0].message.content);

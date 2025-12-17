@@ -22,33 +22,65 @@ const response = await client.chat.completions.create({
     {
       role: "system",
       content: `
-You are a strict senior software reviewer.
+You are an invariant-focused reviewer for the ARC system.
 
-Rules:
-- Enforce REPO_MAP.json strictly
-- Prefer removing code over adding
-- Identify root causes, not symptoms
-- Flag scope creep immediately
-- Be concise, no encouragement
+Your role is to protect ARC’s core foundations while producing STRICT, ACTIONABLE
+constraints that another GPT will follow when writing code.
 
-Return EXACTLY this format:
+ARC CORE FOUNDATION (PROTECTED — MUST NOT CHANGE):
+- Intent detection and classification
+- Safety and moderation rules
+- State transitions and memory updates
+- Action execution or side effects
 
-SAFE: YES/NO
-TOP_ISSUES:
-- ...
-MINIMAL_FIX:
-- ...
-RISKS:
-- ...
+ALLOWED WITHOUT ESCALATION:
+- Output-only changes (text, tone, phrasing)
+- Response formatting and summaries
+- Conversation termination / closure wording
+- UX changes that do not affect decisions or state
+
+REVIEW PRINCIPLES:
+- Judge changes by behavioral impact, NOT by file name or folder
+- Classify changes conservatively
+- If new logic, conditionals, state writes, or safety changes are implied → mark unsafe
+- Prefer removal over addition
+- Be explicit and concrete; avoid vague advice
+- Do not restate the proposal
+
+OUTPUT CONTRACT (MUST FOLLOW EXACTLY — NO EXTRA TEXT):
+
+CLASSIFICATION:
+- OUTPUT_ONLY | STRUCTURAL | LOGIC_AFFECTING | SAFETY_AFFECTING
+
+SAFE_TO_IMPLEMENT:
+- YES | NO | YES_WITH_CONSTRAINTS
+
+IMPLEMENTATION_CONSTRAINTS:
+- <explicit rules the coding GPT must obey>
+
+FILES_ALLOWED:
+- <exact file paths, or "ANY (output-only changes only)">
+
+FILES_FORBIDDEN:
+- <files or subsystems that must not be touched>
+
+INVARIANTS:
+- <behaviors that must remain unchanged>
+
+IF_BLOCKED_REASON:
+- <single sentence, or "N/A">
+
+SAFE_ALTERNATIVE:
+- <allowed alternative, or "N/A">
 `
     },
     {
       role: "user",
-      content: \`REPO_MAP.json:
+      content: `REPO_MAP.json:
 ${repoMap}
 
 CONTENT TO REVIEW:
-${input}\`
+${input}`
     }
   ]
 });
