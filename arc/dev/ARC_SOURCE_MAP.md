@@ -18,8 +18,8 @@
 
 ### UI Chat Pages
 - Files:
-  - arc-system/chat/page.tsx
-  - arc-system/intent/page.tsx
+  - experimental/arc-system/chat/page.tsx
+  - experimental/arc-system/intent/page.tsx
 - Responsibility:
   - Send user input
   - Render responses

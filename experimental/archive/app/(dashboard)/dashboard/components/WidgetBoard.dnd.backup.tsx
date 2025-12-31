@@ -233,3 +233,5 @@ export default function WidgetBoard({ widgets, setWidgets }: WidgetBoardProps) {
     </DndContext>
   );
 }
+
+

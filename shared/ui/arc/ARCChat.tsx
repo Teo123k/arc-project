@@ -3,6 +3,20 @@
 import React, { useEffect, useRef, useState } from "react";
 import { synthesizeDecision } from "@/app/lib/arc/decisionSynthesis";
 import { reconcileProcurement } from "@/app/lib/arc/procurementReconciliation";
+import { resolveCanonicalRecipe, type CanonicalRecipe } from "@/app/lib/arc/recipe/resolveCanonicalRecipe";
+import { computeServingsFromIngredients } from "@/app/lib/arc/recipe/servingsFromIngredients";
+import { humanizeReply, normalizeARCOutput } from "@/app/lib/core/ai/outputNormalization";
+import {
+  buildCuisineDietaryPrompt,
+  buildStructuredRecipeExtractionPrompt,
+  buildValidateClassificationPrompt,
+  extractStructuredRecipeFields,
+  getEnrichmentFileKey,
+  isCoolingDown as isCoolingDownMap,
+  noteFailure as noteFailureMaps,
+  parseJsonObjectFromReply,
+  parseStrictJsonFromReply,
+} from "@/app/lib/core/ai/enrichmentPipeline";
 
 type Role = "user" | "assistant";
 
@@ -27,6 +41,7 @@ type RecipeIntelligence = {
   dishStyle?: string;
   cuisine?: string;
   dietary?: string[];
+  needsReview?: boolean;
 
   // New structured fields (internal use)
   recipeNameStructured?: {
@@ -41,13 +56,31 @@ type RecipeIntelligence = {
   dishStyleStructured?: { value: string; confidence: number };
   cuisineStructured?: { value: string; confidence: number };
   dietaryStructured?: { value: string[]; confidence: number };
+  occasionStructured?: { value: string; confidence: number; source?: "ocr" | "ai" | "user" };
 
   ingredients?: {
     name: string;
     quantity?: number;
     unit?: string;
     confidence?: number;
+    quantityInferred?: boolean;
+    unitInferred?: boolean;
+    category?: "fresh" | "dry" | "other";
   }[];
+
+  steps?: {
+    order: number;
+    instruction: string;
+    confidence?: number;
+  }[];
+
+  servingsAnalysis?: {
+    servings: number | null;
+    assumption: "standalone_main_dinner";
+    limitingIngredient?: string;
+    notes: string[];
+    usedInferredQuantities: boolean;
+  };
 
   completeness?: {
     chefUsable: boolean;
@@ -69,8 +102,61 @@ type RecipeIntelligence = {
   // Internal flag for classification validation
   _classificationValidated?: boolean;
 
+  // Prevent repeated enrichment calls once we've extracted structured fields at least once
+  _structuredExtractedAt?: number;
+  _structuredExtractVersion?: number;
+
   source?: "ocr" | "ai" | "user";
 };
+
+function normalizeOcrRecipeText(raw: string): string {
+  if (!raw) return "";
+  const lines = raw
+    .split("\n")
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const isNumberOnly = (s: string) => /^(\d+(\.\d+)?|\d+\/\d+)$/.test(s);
+  const isUnitOnly = (s: string) =>
+    /^(g|kg|mg|ml|l|tsp|tbsp|cup|cups|oz|lb|lbs|pcs|pc|piece|pieces)$/.test(
+      s.toLowerCase().replace(/\./g, "")
+    );
+
+  const merged: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const a = lines[i];
+    const b = lines[i + 1];
+    const c = lines[i + 2];
+
+    // Merge common OCR fragmentation: "1" + "cup" + "chana daal"
+    if (a && b && c && isNumberOnly(a) && isUnitOnly(b) && !isNumberOnly(c) && !isUnitOnly(c)) {
+      merged.push(`${a} ${b} ${c}`.trim());
+      i += 2;
+      continue;
+    }
+
+    // Merge "1" + "chana daal" (unit missing)
+    if (a && b && isNumberOnly(a) && !isNumberOnly(b) && !isUnitOnly(b)) {
+      merged.push(`${a} ${b}`.trim());
+      i += 1;
+      continue;
+    }
+
+    merged.push(a);
+  }
+
+  return merged.join("\n");
+}
+
+function headTailText(raw: string, maxChars: number): string {
+  if (!raw) return "";
+  if (raw.length <= maxChars) return raw;
+  const headChars = Math.floor(maxChars * 0.6);
+  const tailChars = Math.max(0, maxChars - headChars);
+  const head = raw.slice(0, headChars);
+  const tail = tailChars > 0 ? raw.slice(-tailChars) : "";
+  return `${head}\n\n…\n\n${tail}`;
+}
 
 function resolveHybridRecipeName(input: {
   aiName?: string | null;
@@ -224,23 +310,7 @@ async function enrichCuisineDietaryWithAI(input: {
   ingredients: { name?: string }[];
 }) {
   try {
-    const prompt = `
-You are a culinary assistant.
-
-Given this recipe:
-Name: ${input.name}
-Ingredients: ${input.ingredients.map((i) => i.name).join(", ")}
-
-Infer the cuisine and dietary tags ONLY if you are confident.
-
-Respond in JSON ONLY with this shape:
-{
-  "cuisine": string | null,
-  "dietary": string[] | null
-}
-
-If unsure, return null values.
-`;
+    const prompt = buildCuisineDietaryPrompt(input);
 
     const res = await fetch("/api/arc/chat", {
       method: "POST",
@@ -263,12 +333,7 @@ If unsure, return null values.
     if (typeof rawText !== "string") return null;
 
     // Attempt to parse JSON safely
-    try {
-      const parsed = JSON.parse(rawText);
-      return parsed;
-    } catch {
-      return null;
-    }
+    return parseStrictJsonFromReply(rawText);
   } catch {
     return null;
   }
@@ -278,27 +343,7 @@ async function validateClassificationWithAI(input: {
   name: string;
   ingredients: { name?: string }[];
 }) {
-  const prompt = `
-You are validating a chef recipe classification.
-
-Recipe name: ${input.name}
-Ingredients: ${input.ingredients.map((i) => i.name).join(", ")}
-
-Determine ONLY if you are confident:
-- dishCategory: starter | main | dessert | other | null
-- cuisine: string | null
-- dietary: string[] | null
-
-Respond ONLY in JSON:
-{
-  "dishCategory": string | null,
-  "cuisine": string | null,
-  "dietary": string[] | null,
-  "confidence": number
-}
-
-If unsure, return nulls and low confidence.
-`;
+  const prompt = buildValidateClassificationPrompt(input);
 
   const res = await fetch("/api/arc/chat", {
     method: "POST",
@@ -311,22 +356,21 @@ If unsure, return nulls and low confidence.
     data?.reply || data?.message || data?.content || data?.output || "";
   if (typeof raw !== "string") return null;
 
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  return parseStrictJsonFromReply(raw);
 }
 
 type UploadedFile = {
+  id: string;
   role: 'recipe' | 'invoice' | 'event' | 'note';
   name: string;
   type: string;
   size: number;
+  lastModified?: number;
   extractedText?: string | null;
-  extractionMethod?: "text" | "ocr" | "unsupported";
+  extractionMethod?: "text" | "ocr" | "csv" | "unsupported";
   extractionError?: string | null;
   file?: File;
+  canonicalRecipe?: CanonicalRecipe;
   // Step C — AI-enriched recipe data
   recipeIntelligence?: RecipeIntelligence;
 };
@@ -356,154 +400,6 @@ interface ARCChatProps {
 }
 
 /* ---------- helpers ---------- */
-
-function humanizeReply(raw: string) {
-  if (!raw) {
-    return {
-      message: "",
-      output: null,
-    };
-  }
-
-  const clean = raw.trim();
-
-  let text = clean
-    .replace(/^(FOCUS|DECISION|PLAN|NEXT|CHAT):?/gim, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  // Soften overly formal or system-like opening phrases
-  text = text.replace(
-    /^(Sure\.?|Certainly\.?|Of course\.?|Absolutely\.?|Let's begin\.?|Let us begin\.?|Here's the plan\.?|Here is the plan\.?)/i,
-    ""
-  );
-
-  // Normalize casual human openings
-  text = text.replace(/^(Hi\.?|Hello\.?|Hey\.?)\s+/i, "Hey — ");
-
-  text = text.trim();
-
-  // Remove common robotic openers that repeat across replies
-  text = text.replace(
-    /^(Alright|Okay|Sure|Let's)\b[^\n]*\n?/i,
-    ""
-  );
-
-  // De-duplicate repeated sentences (exact or near-exact)
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const seen = new Set<string>();
-  const deduped: string[] = [];
-
-  for (const s of sentences) {
-    const key = s.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduped.push(s);
-    }
-  }
-
-  // Limit enumerated options to reduce over-breadth
-  const numbered = deduped.filter((s) => /^\d+\.\s+/.test(s));
-  if (numbered.length > 3) {
-    const allowed = new Set(numbered.slice(0, 3));
-    for (let i = deduped.length - 1; i >= 0; i--) {
-      if (/^\d+\.\s+/.test(deduped[i]) && !allowed.has(deduped[i])) {
-        deduped.splice(i, 1);
-      }
-    }
-  }
-
-  // Remove trailing clarification question if earlier statements exist
-  if (
-    deduped.length > 1 &&
-    /\?$/.test(deduped[deduped.length - 1])
-  ) {
-    deduped.pop();
-  }
-
-  text = deduped.join(" ").trim();
-
-  const finalOutput = text || "Hey — what's on your mind?";
-
-  return {
-    message: finalOutput,
-    output: finalOutput,
-  };
-}
-
-function normalizeARCOutput(raw: string): string {
-  if (!raw) return "";
-
-  try {
-    let normalized = raw;
-
-    // Clean obvious OCR noise: double spaces, broken line breaks
-    normalized = normalized
-      .replace(/[ \t]+/g, " ") // Multiple spaces/tabs to single space
-      .replace(/\n{3,}/g, "\n\n") // Multiple newlines to double newline
-      .replace(/[ \t]+\n/g, "\n") // Trailing spaces before newlines
-      .replace(/\n[ \t]+/g, "\n") // Leading spaces after newlines
-      .trim();
-
-    // Ensure DECISION_REVIEW block exists, add header if missing but content suggests it
-    const hasDecisionReview = /DECISION_REVIEW:/i.test(normalized);
-    if (!hasDecisionReview && normalized.length > 100) {
-      // If output is substantial but missing DECISION_REVIEW header,
-      // check if it has section-like structure
-      const hasSectionHeaders = /(?:Verdict|Financials|Operations|Risks|Next Actions):/i.test(normalized);
-      if (hasSectionHeaders) {
-        // Prepend DECISION_REVIEW header for better parsing
-        normalized = `DECISION_REVIEW:\n\n${normalized}`;
-      }
-    }
-
-    // Normalize section headers to ensure they're on their own lines
-    const sectionHeaders = ["Verdict", "Financials", "Operations", "Risks & Gaps", "Next Actions", "Effort & Operations"];
-    for (const header of sectionHeaders) {
-      // Ensure header is followed by colon and on its own line or after space
-      const regex = new RegExp(`\\b${header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!:)`, "gi");
-      normalized = normalized.replace(regex, (match) => {
-        return `${match}:`;
-      });
-    }
-
-    // Ensure all expected sections exist (add empty ones if missing)
-    // This helps Canvas 1 tabs render properly
-    const expectedSections = [
-      { name: "Verdict", aliases: ["Verdict"] },
-      { name: "Financials", aliases: ["Financials"] },
-      { name: "Operations", aliases: ["Operations", "Effort & Operations"] },
-      { name: "Risks & Gaps", aliases: ["Risks & Gaps", "Risks"] },
-      { name: "Next Actions", aliases: ["Next Actions", "Suggested Adjustments"] },
-    ];
-
-    // Check if DECISION_REVIEW block exists
-    const reviewMatch = normalized.match(/DECISION_REVIEW:([\s\S]*)/i);
-    if (reviewMatch) {
-      let reviewContent = reviewMatch[1];
-      
-      // For each expected section, ensure it exists
-      for (const section of expectedSections) {
-        const hasSection = section.aliases.some((alias) => 
-          new RegExp(`${alias}:`, "i").test(reviewContent)
-        );
-        
-        // If section is missing, add it as empty
-        if (!hasSection) {
-          reviewContent += `\n\n${section.name}:\n(No content provided)`;
-        }
-      }
-      
-      normalized = `DECISION_REVIEW:${reviewContent}`;
-    }
-
-    return normalized;
-  } catch (err) {
-    // Never throw - return original if normalization fails
-    console.warn("ARC output normalization failed, using original:", err);
-    return raw;
-  }
-}
 
 function isSourceQuery(text: string): boolean {
   const lowerText = text.toLowerCase();
@@ -555,6 +451,30 @@ export default function ARCChat({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const autoSummarizedRef = useRef<string>(""); // Track which file set we've summarized
   const clarificationSentRef = useRef<string>(""); // Track which ambiguous set we've clarified
+
+  // Prevent runaway enrichment / rate-limit spam
+  const inFlightRef = useRef<Map<string, boolean>>(new Map());
+  const cooldownUntilRef = useRef<Map<string, number>>(new Map());
+  const backoffMsRef = useRef<Map<string, number>>(new Map());
+  const lastErrorLogAtRef = useRef<Map<string, number>>(new Map());
+
+  const getFileKey = (file: UploadedFile, kind: "enrich" | "cuisine") =>
+    getEnrichmentFileKey(file, kind);
+
+  const isCoolingDown = (key: string) => {
+    return isCoolingDownMap(cooldownUntilRef.current, key);
+  };
+
+  const noteFailure = (key: string, err: unknown, retryAfterMs?: number) => {
+    return noteFailureMaps({
+      key,
+      err,
+      retryAfterMs,
+      lastErrorLogAt: lastErrorLogAtRef.current,
+      backoffMs: backoffMsRef.current,
+      cooldownUntil: cooldownUntilRef.current,
+    });
+  };
 
   /* keep scroll pinned */
   useEffect(() => {
@@ -949,197 +869,227 @@ export default function ARCChat({
   useEffect(() => {
     if (!uploadedFiles || uploadedFiles.length === 0) return;
 
-    const pending = uploadedFiles.filter(
-      (f) =>
-        f.role === "recipe" &&
-        !!f.extractedText &&
-        (!f.recipeIntelligence?.recipeName || f.recipeIntelligence?.needsReview)
-    );
+    const STRUCTURED_EXTRACT_VERSION = 3;
+
+    const pending = uploadedFiles.filter((f) => {
+      if (f.role !== "recipe") return false;
+      if (!f.extractedText) return false;
+      // Versioned: re-parse existing recipes once when schema changes
+      if ((f.recipeIntelligence?._structuredExtractVersion ?? 0) >= STRUCTURED_EXTRACT_VERSION) {
+        return false;
+      }
+
+      const key = getFileKey(f, "enrich");
+      if (inFlightRef.current.get(key)) return false;
+      if (isCoolingDown(key)) return false;
+
+      return true;
+    });
 
     if (pending.length === 0) return;
 
-    pending.forEach((file) => {
-      const prompt = `
-You are extracting structured data from a chef recipe.
+    // Serialize enrichment to 1 file at a time to avoid rate-limit bursts
+    const file = pending[0];
+    const key = getFileKey(file, "enrich");
+    inFlightRef.current.set(key, true);
 
-Return STRICT JSON only (no markdown, no explanation).
+    // Use head+tail so we keep the end of the recipe (where steps often live).
+    // Still capped to limit token pressure and rate limiting.
+    const maxChars = 24_000;
+    const recipeText =
+      typeof file.extractedText === "string"
+        ? headTailText(normalizeOcrRecipeText(file.extractedText), maxChars)
+        : "";
 
-Schema:
-{
-  "recipeName": string,
-  "dishCategory": "starter" | "main" | "dessert" | "other",
-  "dishStyle": string,
-  "cuisine": string,
-  "dietary": string[]
-}
+    const prompt = buildStructuredRecipeExtractionPrompt(recipeText);
 
-Rules:
-- If unsure, leave field empty and set needsReview=true.
-- Never invent a recipe name if the text is not enough.
+    (async () => {
+      try {
+        const res = await callARCForSourceQuery(prompt);
+        if (!res.ok) {
+          const retryAfterMsRaw = res.headers.get("retry-after-ms");
+          const retryAfterMs = retryAfterMsRaw ? Number(retryAfterMsRaw) : undefined;
+          noteFailure(key, `HTTP ${res.status}`, retryAfterMs);
+          return;
+        }
 
-Recipe text:
-${file.extractedText}
-`;
+        const data = await res.json().catch(() => null);
+        const raw = data?.reply ? String(data.reply) : "";
+        if (!raw) return;
 
-      callARCForSourceQuery(prompt)
-        .then(async (res) => {
-          if (!res.ok) return null;
-          return res.json().catch(() => null);
-        })
-        .then((data) => {
-          const raw = data?.reply ? String(data.reply) : "";
-          if (!raw) return;
+        const parsed = parseJsonObjectFromReply(raw);
+        if (!parsed) return;
 
-          let parsed: any = null;
-          try {
-            parsed = JSON.parse(raw);
-          } catch {
-            // If the model wrapped JSON in text, attempt to recover the first JSON object.
-            const m = raw.match(/\{[\s\S]*\}/);
-            if (!m) return;
-            try {
-              parsed = JSON.parse(m[0]);
-            } catch {
-              return;
-            }
-          }
+        const extracted = extractStructuredRecipeFields(parsed);
+        const recipeName = extracted.recipeName;
+        const dishCategory = extracted.dishCategory;
+        const dishStyle = extracted.dishStyle;
+        const cuisine = extracted.cuisine;
+        const dietary = extracted.dietary;
 
-          const recipeName =
-            typeof parsed?.recipeName === "string" ? parsed.recipeName.trim() : "";
-          const dishCategory =
-            typeof parsed?.dishCategory === "string" ? parsed.dishCategory : undefined;
-          const dishStyle =
-            typeof parsed?.dishStyle === "string" ? parsed.dishStyle.trim() : "";
-          const cuisine =
-            typeof parsed?.cuisine === "string" ? parsed.cuisine.trim() : "";
-          const dietary =
-            Array.isArray(parsed?.dietary) ? parsed.dietary.filter((x: any) => typeof x === "string") : [];
+        // servingsText currently unused; kept for forward compatibility
+        const _servingsText = extracted.servingsText;
 
-          const needsReview = !recipeName;
+        const ingredients = extracted.ingredients as RecipeIntelligence["ingredients"];
+        const steps = extracted.steps as RecipeIntelligence["steps"];
 
-          setUploadedFiles((prev) =>
-            prev.map((f) => {
-              if (f.name !== file.name || f.size !== file.size) return f;
+        setUploadedFiles((prev) =>
+          prev.map((f) => {
+            const sameFile =
+              f.id && (file as any).id
+                ? f.id === (file as any).id
+                : f.name === file.name && f.size === file.size;
+            if (!sameFile) return f;
 
-              const resolvedName = resolveHybridRecipeName({
-                aiName: recipeName,
-                fileName: f.name,
-                ingredients: parsed?.ingredients,
-              });
+            const resolvedName = resolveHybridRecipeName({
+              aiName: recipeName,
+              fileName: f.name,
+              ingredients: parsed?.ingredients,
+            });
 
-              // Hybrid cuisine/dietary inference (rules-first)
-              const inferred = inferCuisineAndDietary(parsed?.ingredients);
+            const inferred = inferCuisineAndDietary(parsed?.ingredients);
 
-              const baseLifecycleState: any = (() => {
-                if (
-                  parsed?.cuisine ||
-                  parsed?.dishStyle ||
-                  parsed?.dishCategory
-                ) {
-                  return "enriched";
-                }
-                if (parsed?.ingredients?.length) {
-                  return "parsed";
-                }
-                return "discovered";
-              })();
+            const baseLifecycleState: any = (() => {
+              if (parsed?.cuisine || parsed?.dishStyle || parsed?.dishCategory) return "enriched";
+              if (parsed?.ingredients?.length) return "parsed";
+              return "discovered";
+            })();
 
-              const clarificationQuestions: any[] = (() => {
-                const hasYieldOrServings =
-                  parsed?.yield != null ||
-                  parsed?.servings != null ||
-                  parsed?.yieldServings != null;
-                const looksLikeARealRecipe = Boolean(parsed?.ingredients?.length >= 2);
+            const clarificationQuestions: any[] = (() => {
+              const hasYieldOrServings =
+                parsed?.yield != null ||
+                parsed?.servings != null ||
+                parsed?.yieldServings != null;
+              const looksLikeARealRecipe = Boolean(parsed?.ingredients?.length >= 2);
 
-                if (looksLikeARealRecipe && !hasYieldOrServings) {
-                  return [
-                    {
-                      id: `${f.name}-${f.size}-yield-servings`,
-                      field: "yieldServings",
-                      question: "About how many portions does this recipe make?",
-                      options: ["2–4", "5–8", "9–12", "12+"],
-                      priority: 1,
-                      status: "open" as const,
-                    },
-                  ];
-                }
-                return [];
-              })();
+              if (looksLikeARealRecipe && !hasYieldOrServings) {
+                return [
+                  {
+                    id: `${f.name}-${f.size}-yield-servings`,
+                    field: "yieldServings",
+                    question: "About how many portions does this recipe make?",
+                    options: ["2–4", "5–8", "9–12", "12+"],
+                    priority: 1,
+                    status: "open" as const,
+                  },
+                ];
+              }
+              return [];
+            })();
 
-              const lifecycleState: any =
-                clarificationQuestions.length > 0 ? "needs_clarification" : baseLifecycleState;
+            const lifecycleState: any =
+              clarificationQuestions.length > 0 ? "needs_clarification" : baseLifecycleState;
 
-              return {
-                ...f,
-                recipeIntelligence: {
-                  ...f.recipeIntelligence,
-                  lifecycleState,
+            const nextRecipeIntelligence: RecipeIntelligence = {
+              ...f.recipeIntelligence,
+              lifecycleState,
+              needsReview: false,
+              _structuredExtractedAt: Date.now(),
+              _structuredExtractVersion: STRUCTURED_EXTRACT_VERSION,
+              recipeName: resolvedName.value,
+              dishCategory: dishCategory,
+              dishStyle: dishStyle,
+              cuisine: cuisine || inferred.cuisine,
+              recipeNameStructured: {
+                value: resolvedName.value,
+                confidence: resolvedName.confidence,
+                source: recipeName ? "ai" : "ocr",
+              } as any,
+              dishCategoryStructured: dishCategory
+                ? { value: dishCategory, confidence: 0.5 }
+                : undefined,
+              occasionStructured: dishCategory
+                ? { value: dishCategory, confidence: 0.6, source: "ai" }
+                : undefined,
+              dishStyleStructured: dishStyle ? { value: dishStyle, confidence: 0.4 } : undefined,
+              cuisineStructured: cuisine
+                ? { value: cuisine, confidence: 0.4 }
+                : inferred.cuisine
+                ? { value: inferred.cuisine, confidence: inferred.cuisineConfidence }
+                : undefined,
+              dietary: dietary?.length ? dietary : inferred.dietary?.length ? inferred.dietary : undefined,
+              dietaryStructured: dietary?.length
+                ? { value: dietary, confidence: 0.4 }
+                : inferred.dietary
+                ? { value: inferred.dietary, confidence: inferred.dietaryConfidence }
+                : undefined,
+              ingredients: ingredients ?? [],
+              steps: steps ?? [],
+              servingsAnalysis: computeServingsFromIngredients({
+                ingredients: (ingredients ?? []).map((i) => ({
+                  name: i.name,
+                  quantity: i.quantity ?? null,
+                  unit: i.unit ?? null,
+                  quantityInferred: i.quantityInferred,
+                  unitInferred: i.unitInferred,
+                })),
+              }),
+              completeness: (() => {
+                const chefUsable =
+                  Boolean(resolvedName.value) &&
+                  Boolean((ingredients?.length ?? 0) >= 2) &&
+                  Boolean((steps?.length ?? 0) >= 2);
+                const costingReady = false;
+                return { chefUsable, costingReady };
+              })(),
+              clarificationQuestions,
+              source: "ai",
+            };
 
-                  // Legacy flat fields
-                  recipeName: resolvedName.value,
-                  dishCategory: dishCategory,
-                  dishStyle: dishStyle,
-                  cuisine: cuisine || inferred.cuisine,
-                  dietary: dietary || inferred.dietary,
+            const canonicalRecipe = resolveCanonicalRecipe({
+              id: f.id || `${f.name}-${f.size}-${f.lastModified ?? 0}`,
+              extractedText: f.extractedText ?? null,
+              recipeIntelligence: nextRecipeIntelligence as any,
+              fallbackTitle: nextRecipeIntelligence.recipeName ?? f.name,
+            });
 
-                  // New structured fields (non-breaking, internal use)
-                  recipeNameStructured: {
-                    value: resolvedName.value,
-                    confidence: resolvedName.confidence,
-                    source: recipeName ? "ai" : "derived",
-                  } as any,
+            return {
+              ...f,
+              recipeIntelligence: nextRecipeIntelligence,
+              canonicalRecipe,
+            };
+          })
+        );
 
-                  dishCategoryStructured: dishCategory
-                    ? {
-                        value: dishCategory,
-                        confidence: 0.5,
-                      }
-                    : undefined,
-
-                  dishStyleStructured: dishStyle
-                    ? { value: dishStyle, confidence: 0.4 }
-                    : undefined,
-                  cuisineStructured: cuisine
-                    ? { value: cuisine, confidence: 0.4 }
-                    : inferred.cuisine
-                    ? { value: inferred.cuisine, confidence: inferred.cuisineConfidence }
-                    : undefined,
-                  dietaryStructured: dietary?.length
-                    ? { value: dietary, confidence: 0.4 }
-                    : inferred.dietary
-                    ? { value: inferred.dietary, confidence: inferred.dietaryConfidence }
-                    : undefined,
-
-                  ingredients: parsed?.ingredients?.map((ing: any) => ({
-                    ...ing,
-                    confidence: 0.4,
-                  })),
-
-                  completeness: (() => {
-                    const chefUsable =
-                      Boolean(resolvedName.value) && Boolean(parsed?.ingredients?.length >= 2);
-
-                    // Costing readiness stays conservative for now
-                    const costingReady = false;
-
-                    return { chefUsable, costingReady };
-                  })(),
-
-                  // Internal clarification queue (no UX yet)
-                  clarificationQuestions,
-
-                  source: "ai",
-                },
-              };
-            })
-          );
-        });
-    });
+        // success: clear backoff/cooldown
+        backoffMsRef.current.delete(key);
+        cooldownUntilRef.current.delete(key);
+      } catch (err) {
+        noteFailure(key, err);
+      } finally {
+        inFlightRef.current.delete(key);
+      }
+    })();
   }, [uploadedFiles, setUploadedFiles]);
 
   // AI fallback for cuisine/dietary when rules fail
   useEffect(() => {
-    uploadedFiles.forEach(async (file) => {
+    const file = uploadedFiles.find((f) => {
+      const intel = f.recipeIntelligence;
+      if (!intel) return false;
+
+      if (
+        intel.completeness?.chefUsable !== true ||
+        intel.cuisineStructured ||
+        intel.dietaryStructured ||
+        !intel.ingredients ||
+        intel.ingredients.length < 3 ||
+        intel._aiCuisineDietaryAttempted
+      ) {
+        return false;
+      }
+
+      const key = getFileKey(f, "cuisine");
+      if (inFlightRef.current.get(key)) return false;
+      if (isCoolingDown(key)) return false;
+      return true;
+    });
+
+    if (!file) return;
+
+    (async () => {
+      const key = getFileKey(file, "cuisine");
+      inFlightRef.current.set(key, true);
       const intel = file.recipeIntelligence;
       if (!intel) return;
 
@@ -1155,22 +1105,24 @@ ${file.extractedText}
         return;
       }
 
-      const aiResult = await enrichCuisineDietaryWithAI({
-        name: intel.recipeName || "",
-        ingredients: intel.ingredients,
-      });
+      try {
+        const aiResult = await enrichCuisineDietaryWithAI({
+          name: intel.recipeName || "",
+          ingredients: intel.ingredients,
+        });
 
-      if (!aiResult) return;
+        if (!aiResult) return;
 
-      setUploadedFiles((prev) =>
-        prev.map((f) => {
-          if (f.name !== file.name || f.size !== file.size) return f;
+        setUploadedFiles((prev) =>
+          prev.map((f) => {
+            const sameFile =
+              f.id && (file as any).id
+                ? f.id === (file as any).id
+                : f.name === file.name && f.size === file.size;
+            if (!sameFile) return f;
 
-          return {
-            ...f,
-            recipeIntelligence: {
+            const nextRecipeIntelligence: RecipeIntelligence = {
               ...f.recipeIntelligence,
-
               cuisine:
                 f.recipeIntelligence?.cuisine ?? aiResult.cuisine ?? undefined,
               dietary:
@@ -1189,11 +1141,31 @@ ${file.extractedText}
                   : undefined),
 
               _aiCuisineDietaryAttempted: true,
-            },
-          };
-        })
-      );
-    });
+            };
+
+            const canonicalRecipe = resolveCanonicalRecipe({
+              id: f.id || `${f.name}-${f.size}-${f.lastModified ?? 0}`,
+              extractedText: f.extractedText ?? null,
+              recipeIntelligence: nextRecipeIntelligence as any,
+              fallbackTitle: nextRecipeIntelligence.recipeName ?? f.name,
+            });
+
+            return {
+              ...f,
+              recipeIntelligence: nextRecipeIntelligence,
+              canonicalRecipe,
+            };
+          })
+        );
+
+        backoffMsRef.current.delete(key);
+        cooldownUntilRef.current.delete(key);
+      } catch (err) {
+        noteFailure(key, err);
+      } finally {
+        inFlightRef.current.delete(key);
+      }
+    })();
   }, [uploadedFiles]);
 
   /* auto-summarize uploaded files */
@@ -1203,7 +1175,7 @@ ${file.extractedText}
 
     // Create a fingerprint of current file set to avoid re-summarizing
     const fileFingerprint = uploadedFiles
-      .map((f) => `${f.name}-${f.size}`)
+      .map((f) => f.id || `${f.name}-${f.size}`)
       .sort()
       .join("|");
 

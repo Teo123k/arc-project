@@ -12,7 +12,7 @@
       ],
       "restricted_paths": [
         "app/api/",
-        "arc-system/",
+        "experimental/arc-system/",
         "lib/arc/",
         "src/arc/",
         "middleware.ts",

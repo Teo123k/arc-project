@@ -86,25 +86,26 @@
 │   └── dev
 │       ├── REPO_MAP.json
 │       └── repo_tree.txt
-├── arc-system
-│   ├── chat
-│   │   └── page.tsx
-│   ├── components
-│   │   └── ArcOutput.tsx
-│   ├── db
-│   │   └── save-intention.ts
-│   ├── engine
-│   │   ├── action-engine.ts
-│   │   ├── friction-engine.ts
-│   │   ├── index.ts
-│   │   ├── intention-engine.ts
-│   │   ├── priority-engine.ts
-│   │   └── types.ts
-│   ├── intent
-│   │   └── page.tsx
-│   ├── page.tsx
-│   └── test
-│       └── page.tsx
+├── experimental
+│   └── arc-system
+│       ├── chat
+│       │   └── page.tsx
+│       ├── components
+│       │   └── ArcOutput.tsx
+│       ├── db
+│       │   └── save-intention.ts
+│       ├── engine
+│       │   ├── action-engine.ts
+│       │   ├── friction-engine.ts
+│       │   ├── index.ts
+│       │   ├── intention-engine.ts
+│       │   ├── priority-engine.ts
+│       │   └── types.ts
+│       ├── intent
+│       │   └── page.tsx
+│       ├── page.tsx
+│       └── test
+│           └── page.tsx
 ├── bun.lock
 ├── components
 │   ├── query-provider.tsx
