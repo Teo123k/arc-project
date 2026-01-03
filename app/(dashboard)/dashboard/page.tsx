@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import ARCChat from "@/shared/ui/arc/ARCChat";
 import { extractFilesContent } from "@/app/lib/arc/fileExtraction";
 import { RecipeFrame } from "@/shared/ui/arc/RecipeFrame";
@@ -17,11 +17,14 @@ import {
   loadInvoiceFolders,
   loadRecipeFolders,
   loadUploadedFiles,
+  loadString,
+  removeKey,
   saveArcState,
   saveEventFolders,
   saveEventProjects,
   saveInvoiceFolders,
   saveRecipeFolders,
+  saveString,
   saveUploadedFiles,
 } from "./storage";
 import { triggerRoleUpload as triggerRoleUploadController } from "./uploadController";
@@ -30,9 +33,13 @@ const STORAGE_KEY = "arc.state";
 const UPLOADED_FILES_KEY = "arc.uploadedFiles.v1";
 const RECIPE_FOLDERS_KEY = "arc.recipeFolders.v1";
 const INVOICE_FOLDERS_KEY = "arc.invoiceFolders.v1";
+const INSPIRATION_RECIPE_FOLDER_ID = "__inspiration__";
 
 const EVENT_PROJECTS_KEY = "arc.eventProjects.v1";
 const EVENT_FOLDERS_KEY = "arc.eventFolders.v1";
+const ACTIVE_EVENT_ID_KEY = "arc.activeEventId.v1";
+
+type EventIngestionStatus = "not_started" | "processing" | "attempted" | "failed";
 
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
@@ -70,13 +77,51 @@ export default function DashboardPage() {
   const [eventFolders, setEventFolders] = useState<EventFolder[]>([]);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [showNewProjectPage, setShowNewProjectPage] = useState(false);
+  // Draft event: local-only until explicit save or confirmed name. Not persisted; not in left panel list.
+  const [draftEvent, setDraftEvent] = useState<EventProject | null>(null);
+  // When set, NewProjectPage will auto-open the event brief file picker (used by the "Upload event brief" CTA).
+  const [autoOpenEventBriefUploadKey, setAutoOpenEventBriefUploadKey] = useState<number | null>(null);
   // UI-only view state (does NOT affect OCR or logic)
   const [currentView, setCurrentView] = useState<
     "home" | "library" | "new-project"
   >("new-project");
   const [showChat, setShowChat] = useState(true);
+  const [eventIngestionById, setEventIngestionById] = useState<
+    Record<
+      string,
+      {
+        status: EventIngestionStatus;
+        attemptedAt?: number;
+        extractedChars?: number;
+        fileCount?: number;
+        error?: string;
+      }
+    >
+  >({});
   // Library internal routing (UI only)
   const [libraryTab, setLibraryTab] = useState<"recipes" | "invoices">("recipes");
+  const didRestoreActiveEventRef = useRef(false);
+  const chatRootRef = useRef<HTMLDivElement | null>(null);
+  const [homeRecipeIdea, setHomeRecipeIdea] = useState<string>("");
+  const [homeInspirationPickerOpen, setHomeInspirationPickerOpen] = useState(false);
+  const [homeSelectedInspirationId, setHomeSelectedInspirationId] = useState<string | null>(null);
+  const [homePasteOpen, setHomePasteOpen] = useState(false);
+  const [homePasteText, setHomePasteText] = useState<string>("");
+
+  const inspirationRecipes = useMemo(() => {
+    return uploadedFiles.filter(
+      (f) =>
+        f.role === "recipe" &&
+        f.recipeFolderId === INSPIRATION_RECIPE_FOLDER_ID
+    );
+  }, [uploadedFiles]);
+
+  const selectedInspirationRecipe = useMemo(() => {
+    if (!homeSelectedInspirationId) return null;
+    return (
+      inspirationRecipes.find((r) => r.id === homeSelectedInspirationId) ?? null
+    );
+  }, [homeSelectedInspirationId, inspirationRecipes]);
 
   const confirmedRecipes = uploadedFiles.filter(
     f =>
@@ -108,7 +153,10 @@ export default function DashboardPage() {
 
   const filteredRecipeFiles = useMemo(() => {
     const sel = recipeTreeSelection;
-    if (sel.kind === "all") return recipeFiles;
+    if (sel.kind === "all") {
+      // "My Recipes" intentionally excludes Inspiration recipes.
+      return recipeFiles.filter((r) => r.recipeFolderId !== INSPIRATION_RECIPE_FOLDER_ID);
+    }
     if (sel.kind === "unsorted") return recipeFiles.filter((r) => !r.recipeFolderId);
     if (sel.kind === "folder") return recipeFiles.filter((r) => r.recipeFolderId === sel.folderId);
     return recipeFiles;
@@ -147,6 +195,7 @@ export default function DashboardPage() {
   };
 
   const renameRecipeFolder = (folderId: string, nextName: string) => {
+    if (folderId === INSPIRATION_RECIPE_FOLDER_ID) return;
     const trimmed = nextName.trim();
     if (!trimmed) return;
     setRecipeFolders((prev) =>
@@ -155,6 +204,7 @@ export default function DashboardPage() {
   };
 
   const deleteRecipeFolder = (folderId: string) => {
+    if (folderId === INSPIRATION_RECIPE_FOLDER_ID) return;
     setRecipeFolders((prev) => prev.filter((f) => f.id !== folderId));
     setUploadedFiles((prev) =>
       prev.map((f) => {
@@ -276,6 +326,26 @@ export default function DashboardPage() {
     setSelectedRecipeIds(new Set());
   };
 
+  const createMyRecipeFromInspiration = useCallback(
+    (sourceId: string) => {
+      const source = uploadedFiles.find((f) => f.id === sourceId);
+      if (!source || source.role !== "recipe") return;
+      const nextId = `${source.id}-my-${crypto.randomUUID()}`;
+
+      const duplicated: UploadedFile = {
+        ...(source as any),
+        id: nextId,
+        recipeFolderId: null,
+      };
+
+      setUploadedFiles((prev) => [duplicated, ...prev]);
+      setRecipeTreeSelection({ kind: "all" });
+      setSelectedRecipeId(nextId);
+      setIsRecipeFrameOpen(true);
+    },
+    [uploadedFiles]
+  );
+
   const toggleInvoiceSelection = (id: string) => {
     setSelectedInvoiceIds((prev) => {
       const next = new Set(prev);
@@ -339,8 +409,16 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!mounted) return;
     const hydrated = loadRecipeFolders(RECIPE_FOLDERS_KEY);
-    if (!hydrated) return;
-    setRecipeFolders(hydrated);
+    const withInspiration =
+      hydrated && Array.isArray(hydrated)
+        ? hydrated.some((f) => f.id === INSPIRATION_RECIPE_FOLDER_ID)
+          ? hydrated
+          : [
+              { id: INSPIRATION_RECIPE_FOLDER_ID, name: "Inspiration", createdAt: Date.now() },
+              ...hydrated,
+            ]
+        : [{ id: INSPIRATION_RECIPE_FOLDER_ID, name: "Inspiration", createdAt: Date.now() }];
+    setRecipeFolders(withInspiration);
   }, [mounted]);
 
   // Load persisted invoice folders (client-only)
@@ -400,6 +478,32 @@ export default function DashboardPage() {
     setEventProjects(parsed);
   }, [mounted]);
 
+  // Restore previously active event selection (best-effort)
+  useEffect(() => {
+    if (!mounted) return;
+    if (didRestoreActiveEventRef.current) return;
+    if (eventProjects.length === 0) return;
+
+    const savedId = loadString(ACTIVE_EVENT_ID_KEY);
+    if (!savedId) {
+      didRestoreActiveEventRef.current = true;
+      return;
+    }
+
+    const exists = eventProjects.some((e) => e.id === savedId);
+    if (!exists) {
+      removeKey(ACTIVE_EVENT_ID_KEY);
+      didRestoreActiveEventRef.current = true;
+      return;
+    }
+
+    setDraftEvent(null);
+    setActiveEventId(savedId);
+    setCurrentView("new-project");
+    didRestoreActiveEventRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, eventProjects]);
+
   // Load persisted event folders
   useEffect(() => {
     if (!mounted) return;
@@ -414,47 +518,36 @@ export default function DashboardPage() {
     saveEventProjects(EVENT_PROJECTS_KEY, eventProjects);
   }, [mounted, eventProjects]);
 
+  // Persist active event selection (saved events only)
+  useEffect(() => {
+    if (!mounted) return;
+    if (activeEventId) {
+      saveString(ACTIVE_EVENT_ID_KEY, activeEventId);
+      return;
+    }
+    removeKey(ACTIVE_EVENT_ID_KEY);
+  }, [mounted, activeEventId]);
+
   // Persist event folders
   useEffect(() => {
     if (!mounted) return;
     saveEventFolders(EVENT_FOLDERS_KEY, eventFolders);
   }, [mounted, eventFolders]);
 
-  // Auto-create event when entering new-project view with no active event
-  // This removes the intermediate "Planning" landing screen - always go straight to Idea canvas
-  useEffect(() => {
-    if (!mounted) return;
-    if (currentView !== "new-project") return;
-    if (showNewProjectPage && activeEventId) return; // Already have an active event open
-    
-    // Auto-create a new event and open the Idea canvas immediately
-    const newEvent: EventProject = {
-      id: crypto.randomUUID(),
-      name: "New Event",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      phase: "idea",
-      freeformNotes: "",
-      uploadedFileIds: [],
-      details: {},
-      unknowns: [],
-      constraints: [],
-      menu: { courses: [], guestCount: 0 },
-      costBreakdown: null,
-      operations: null,
-      risks: [],
-      verdict: null,
-    };
-    setEventProjects((prev) => [newEvent, ...prev]);
-    setActiveEventId(newEvent.id);
-    setShowNewProjectPage(true);
-  }, [mounted, currentView, activeEventId, showNewProjectPage]);
-
   // Active event project
   const activeEvent = useMemo(() => {
     if (!activeEventId) return null;
     return eventProjects.find((e) => e.id === activeEventId) ?? null;
   }, [eventProjects, activeEventId]);
+
+  const currentProject = draftEvent ?? activeEvent;
+
+  const commitDraftEvent = useCallback((draft: EventProject) => {
+    setEventProjects((prev) => [draft, ...prev]);
+    setDraftEvent(null);
+    setActiveEventId(draft.id);
+    setShowNewProjectPage(true);
+  }, []);
 
   // Create a new event project
   const createEventProject = () => {
@@ -470,6 +563,7 @@ export default function DashboardPage() {
       unknowns: [],
       constraints: [],
       menu: { courses: [], guestCount: 0 },
+      shoppingList: [],
       costBreakdown: null,
       operations: null,
       risks: [],
@@ -479,6 +573,59 @@ export default function DashboardPage() {
     setActiveEventId(newEvent.id);
     setShowNewProjectPage(true);
     return newEvent;
+  };
+
+  // Create a local-only draft project (not in sidebar list; not persisted until commit)
+  const createDraftEventProject = () => {
+    const newEvent: EventProject = {
+      id: crypto.randomUUID(),
+      name: "New Event",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      phase: "idea",
+      freeformNotes: "",
+      uploadedFileIds: [],
+      details: {},
+      unknowns: [],
+      constraints: [],
+      menu: { courses: [], guestCount: 0 },
+      shoppingList: [],
+      costBreakdown: null,
+      operations: null,
+      risks: [],
+      verdict: null,
+    };
+    setDraftEvent(newEvent);
+    setActiveEventId(null);
+    setShowNewProjectPage(true);
+    return newEvent;
+  };
+
+  const beginEventBriefUpload = useCallback(() => {
+    // Uploading a brief is an intentional action; create a draft only if needed.
+    if (!currentProject) {
+      createDraftEventProject();
+    } else {
+      setShowNewProjectPage(true);
+    }
+    setAutoOpenEventBriefUploadKey(Date.now());
+  }, [currentProject]);
+
+  // Auto-create a draft when entering new-project view without a current project
+  useEffect(() => {
+    if (currentView === "new-project" && !currentProject) {
+      createDraftEventProject();
+    }
+  }, [currentView, currentProject]);
+
+  const updateCurrentProject = (updates: Partial<EventProject>) => {
+    if (draftEvent) {
+      setDraftEvent((prev) => (prev ? { ...prev, ...updates, updatedAt: Date.now() } : prev));
+      return;
+    }
+    if (activeEventId) {
+      updateEventProject(activeEventId, updates);
+    }
   };
 
   // Update an event project
@@ -549,9 +696,6 @@ export default function DashboardPage() {
             <div className="flex flex-col gap-3">
               {/* MENU */}
               <nav className="space-y-1">
-                <button className="w-full text-left px-2 py-1 rounded hover:bg-[#EFE4D2]">
-                  🔍 Search
-                </button>
                 <button
                   className="w-full text-left px-2 py-1 rounded hover:bg-[#EFE4D2]"
                   onClick={() => setCurrentView("home")}
@@ -568,7 +712,11 @@ export default function DashboardPage() {
                   className="w-full text-left px-2 py-1 rounded hover:bg-[#EFE4D2] font-medium"
                   onClick={() => {
                     setCurrentView("new-project");
-                    createEventProject();
+                    // New Project is navigation only. Do not create a draft/event until the user takes an explicit action.
+                    setDraftEvent(null);
+                    setActiveEventId(null);
+                    setShowNewProjectPage(false);
+                    setAutoOpenEventBriefUploadKey(null);
                   }}
                 >
                   ➕ New Project
@@ -587,8 +735,31 @@ export default function DashboardPage() {
                     Current Project
                   </div>
                   {activeEvent && (
-                    <div className="pl-2 mt-1 text-sm font-medium text-[#2F2A25] truncate" title={activeEvent.name}>
-                      {activeEvent.name}
+                    <div className="pl-2 mt-1 flex items-center gap-2 min-w-0">
+                      <div className="min-w-0 text-sm font-medium text-[#2F2A25] truncate" title={activeEvent.name}>
+                        {activeEvent.name}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ok = window.confirm(
+                            `Delete this project?\n\n${activeEvent.name}\n\nThis cannot be undone.`
+                          );
+                          if (!ok) return;
+                          deleteEventProject(activeEvent.id);
+                        }}
+                        className="shrink-0 text-[11px] text-[#8B7E6A] hover:text-[#2F2A25] px-1"
+                        aria-label={`Delete active project: ${activeEvent.name}`}
+                        title="Delete"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
+                  {!activeEvent && eventProjects.length === 0 && (
+                    <div className="pl-2 mt-1 text-xs text-[#8B7E6A]">
+                      No saved events yet
                     </div>
                   )}
                   
@@ -603,16 +774,35 @@ export default function DashboardPage() {
                           .filter((e) => e.id !== activeEventId)
                           .slice(0, 10)
                           .map((e) => (
-                            <button
-                              key={e.id}
-                              onClick={() => {
-                                setActiveEventId(e.id);
-                                setShowNewProjectPage(true);
-                              }}
-                              className="block w-full text-left text-xs text-[#6F6352] hover:text-[#2F2A25] truncate py-0.5"
-                            >
-                              {e.name}
-                            </button>
+                            <div key={e.id} className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setDraftEvent(null);
+                                  setActiveEventId(e.id);
+                                  setShowNewProjectPage(true);
+                                }}
+                                className="min-w-0 flex-1 text-left text-xs text-[#6F6352] hover:text-[#2F2A25] truncate py-0.5"
+                                title={e.name}
+                              >
+                                {e.name}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  const ok = window.confirm(
+                                    `Delete this project?\n\n${e.name}\n\nThis cannot be undone.`
+                                  );
+                                  if (!ok) return;
+                                  deleteEventProject(e.id);
+                                }}
+                                className="shrink-0 text-[11px] text-[#8B7E6A] hover:text-[#2F2A25] px-1"
+                                aria-label={`Delete project: ${e.name}`}
+                                title="Delete"
+                              >
+                                ✕
+                              </button>
+                            </div>
                           ))}
                       </div>
                     </>
@@ -631,19 +821,6 @@ export default function DashboardPage() {
                   </button>
                 </div>
               )}
-
-              {/* New project uploads */}
-              {currentView === "new-project" && (
-                <div className="pl-2 mt-2 space-y-1">
-                  <button onClick={() => triggerRoleUpload("event")} className="block text-left text-xs hover:underline">
-                    + Add Event Brief
-                  </button>
-                  <button onClick={() => triggerRoleUpload("note")} className="block text-left text-xs hover:underline">
-                    + Add Notes
-                  </button>
-                </div>
-              )}
-
 
               {extractingFiles && (
                 <p className="text-xs text-[#8B7E6A] mb-2">Extracting…</p>
@@ -784,6 +961,8 @@ export default function DashboardPage() {
                               <div className="divide-y divide-[#E0D4BF] overflow-auto max-h-[620px]">
                                 {filteredRecipeFiles.map((file) => {
                                   const active = file.id === selectedRecipeId;
+                                  const isInspiration =
+                                    file.recipeFolderId === INSPIRATION_RECIPE_FOLDER_ID;
                                   return (
                                     <button
                                       key={file.id}
@@ -792,10 +971,17 @@ export default function DashboardPage() {
                                       }`}
                                       onClick={() => setSelectedRecipeId(file.id)}
                                     >
-                                      <div className="text-sm font-medium truncate text-[#2F2A25]">
-                                        {file.canonicalRecipe?.title ??
-                                          file.recipeIntelligence?.recipeName ??
-                                          file.name}
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <div className="text-sm font-medium truncate text-[#2F2A25]">
+                                          {file.canonicalRecipe?.title ??
+                                            file.recipeIntelligence?.recipeName ??
+                                            file.name}
+                                        </div>
+                                        {isInspiration && (
+                                          <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-full border border-[#E0D4BF] bg-white/60 text-[#6F6352]">
+                                            Inspiration
+                                          </span>
+                                        )}
                                       </div>
                                       <div className="text-[11px] text-[#8B7E6A] truncate">
                                         {file.recipeIntelligence?.cuisine ?? "—"} ·{" "}
@@ -812,6 +998,7 @@ export default function DashboardPage() {
                               <RecipeFrame
                                 file={selectedRecipeFile}
                                 onHide={() => setIsRecipeFrameOpen(false)}
+                                onCreateMyRecipeFromThis={createMyRecipeFromInspiration}
                                 onUpdate={(next) => {
                                   setUploadedFiles((prev) =>
                                     prev.map((f) =>
@@ -848,6 +1035,17 @@ export default function DashboardPage() {
                               <div className="divide-y divide-[#E0D4BF]">
                                 {filteredRecipeFiles.map((file) => {
                                   const isSelected = selectedRecipeIds.has(file.id);
+                                  const isInspiration =
+                                    file.recipeFolderId === INSPIRATION_RECIPE_FOLDER_ID;
+                                  const sourceLabel =
+                                    file.extractionMethod === "ocr"
+                                      ? "OCR"
+                                      : file.extractionMethod === "text"
+                                      ? "Paste"
+                                      : typeof file.type === "string" &&
+                                        file.type.startsWith("image/")
+                                      ? "Screenshot"
+                                      : "File";
                                   return (
                                     <div
                                       key={file.id}
@@ -883,13 +1081,22 @@ export default function DashboardPage() {
                                           setIsRecipeFrameOpen(true);
                                         }}
                                       >
-                                        <div className="text-sm font-medium truncate text-[#2F2A25]">
-                                          {file.canonicalRecipe?.title ??
-                                            file.recipeIntelligence?.recipeName ??
-                                            file.name}
+                                        <div className="flex items-center gap-2 min-w-0">
+                                          <div className="text-sm font-medium truncate text-[#2F2A25]">
+                                            {file.canonicalRecipe?.title ??
+                                              file.recipeIntelligence?.recipeName ??
+                                              file.name}
+                                          </div>
+                                          {isInspiration && (
+                                            <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-full border border-[#E0D4BF] bg-white/60 text-[#6F6352]">
+                                              Inspiration
+                                            </span>
+                                          )}
                                         </div>
                                         <div className="text-[11px] text-[#8B7E6A]">
-                                          {file.recipeIntelligence?.dishStyle ?? "Recipe document"}
+                                          {isInspiration
+                                            ? `Source: ${sourceLabel}`
+                                            : (file.recipeIntelligence?.dishStyle ?? "Recipe document")}
                                         </div>
                                       </button>
                                       <div className="text-xs text-[#6F6352] flex items-center">
@@ -1329,22 +1536,300 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* New Project / Event View - always shows NewProjectPage (auto-created if needed) */}
+              {/* ===================== */}
+              {/* HOME CANVAS VIEW */}
+              {/* ===================== */}
+              {currentView === "home" && (
+                <div className="space-y-10">
+                  {/* Recent Events */}
+                  <section className="space-y-3">
+                    <div className="flex items-end justify-between">
+                      <div>
+                        <div className="text-lg font-semibold text-[#2F2A25]">
+                          Recent Events
+                        </div>
+                        <div className="text-sm text-[#8B7E6A]">
+                          Jump back into an event or start a new one.
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setCurrentView("new-project");
+                          // Navigation only. Do not create a draft/event until the user takes an explicit action.
+                          setDraftEvent(null);
+                          setActiveEventId(null);
+                          setShowNewProjectPage(false);
+                          setAutoOpenEventBriefUploadKey(null);
+                        }}
+                        className="px-3 py-1.5 rounded-md bg-[#2F2A25] text-white hover:bg-[#4A331D] transition text-sm"
+                      >
+                        New Event
+                      </button>
+                    </div>
+
+                    {eventProjects.length === 0 ? (
+                      <div className="rounded-xl border border-[#E0D4BF] bg-[#F3E6D3] p-4 text-sm text-[#6F6352]">
+                        No saved events yet.
+                      </div>
+                    ) : (
+                      <div className="flex gap-3 overflow-x-auto pb-2">
+                        {eventProjects.map((e) => {
+                          const occasion = e.details?.occasion?.trim();
+                          const date = e.details?.date?.trim();
+                          const meta = [occasion, date].filter(Boolean).join(" • ");
+                          return (
+                            <button
+                              key={e.id}
+                              onClick={() => {
+                                setDraftEvent(null);
+                                setActiveEventId(e.id);
+                                setShowNewProjectPage(true);
+                                setCurrentView("new-project");
+                              }}
+                              className="min-w-[240px] max-w-[260px] text-left rounded-xl border border-[#E0D4BF] bg-[#F3E6D3] hover:bg-[#EADDC7] transition p-4"
+                              title={e.name}
+                            >
+                              <div className="text-sm font-semibold text-[#2F2A25] truncate">
+                                {e.name}
+                              </div>
+                              <div className="mt-1 text-xs text-[#6F6352] truncate">
+                                {meta || "—"}
+                              </div>
+                              <div className="mt-2 text-[11px] text-[#8B7E6A]">
+                                Updated{" "}
+                                {new Date(e.updatedAt || e.createdAt).toLocaleDateString()}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* Recipe Idea Input (calm, minimal) */}
+                  <section className="space-y-3">
+                    <div className="text-lg font-semibold text-[#2F2A25]">
+                      Recipe Idea
+                    </div>
+                    <textarea
+                      value={homeRecipeIdea}
+                      onChange={(e) => setHomeRecipeIdea(e.target.value)}
+                      placeholder="Describe your recipe idea, inspiration, or goal in your own words…"
+                      rows={7}
+                      className="w-full rounded-xl border border-[#E0D4BF] bg-[#FBF4E8] p-4 text-sm text-[#2F2A25] placeholder:text-[#8B7E6A] outline-none focus:ring-2 focus:ring-[#E0D4BF]"
+                    />
+                    <div className="flex items-center gap-4 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setHomeInspirationPickerOpen(true)}
+                        className="text-[#8A6A3A] hover:underline"
+                      >
+                        📎 Use inspiration recipe
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHomePasteOpen(true)}
+                        className="text-[#8A6A3A] hover:underline"
+                      >
+                        📄 Upload / paste recipe
+                      </button>
+                    </div>
+
+                    {selectedInspirationRecipe && (
+                      <div className="rounded-xl border border-[#E0D4BF] bg-[#F3E6D3] p-4">
+                        <div className="text-[11px] uppercase tracking-wide text-[#8B7E6A]">
+                          Inspiration preview
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-[#2F2A25] truncate">
+                          {selectedInspirationRecipe.canonicalRecipe?.title ??
+                            selectedInspirationRecipe.recipeIntelligence?.recipeName ??
+                            selectedInspirationRecipe.name}
+                        </div>
+                        <div className="mt-1 text-xs text-[#6F6352] line-clamp-3 whitespace-pre-line">
+                          {(selectedInspirationRecipe.extractedText ?? "").slice(0, 260) || "—"}
+                        </div>
+                      </div>
+                    )}
+                  </section>
+
+                  {/* Inspiration picker modal */}
+                  {homeInspirationPickerOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+                      <div className="w-[min(720px,92vw)] max-h-[80vh] overflow-hidden rounded-xl border border-[#E0D4BF] bg-[#F8F1E6] shadow-sm">
+                        <div className="px-4 py-3 border-b border-[#E0D4BF] flex items-center justify-between">
+                          <div className="text-sm font-semibold text-[#2F2A25]">
+                            Inspiration Recipes
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setHomeInspirationPickerOpen(false)}
+                            className="text-xs text-[#8A6A3A] hover:underline"
+                          >
+                            Close
+                          </button>
+                        </div>
+                        <div className="p-3 overflow-auto max-h-[calc(80vh-52px)]">
+                          {inspirationRecipes.length === 0 ? (
+                            <div className="text-sm text-[#8B7E6A]">
+                              No inspiration recipes yet.
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-[#E0D4BF] rounded-xl overflow-hidden border border-[#E0D4BF] bg-[#FBF4E8]">
+                              {inspirationRecipes.map((r) => (
+                                <button
+                                  key={r.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setHomeSelectedInspirationId(r.id);
+                                    setHomeInspirationPickerOpen(false);
+                                  }}
+                                  className="w-full text-left px-4 py-3 hover:bg-[#F5ECDD] transition"
+                                  title={r.name}
+                                >
+                                  <div className="text-sm font-medium text-[#2F2A25] truncate">
+                                    {r.canonicalRecipe?.title ??
+                                      r.recipeIntelligence?.recipeName ??
+                                      r.name}
+                                  </div>
+                                  <div className="text-[11px] text-[#8B7E6A] truncate">
+                                    {r.recipeIntelligence?.cuisine ?? "—"} ·{" "}
+                                    {r.recipeIntelligence?.dishCategory ?? "—"}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Upload / paste modal */}
+                  {homePasteOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+                      <div className="w-[min(720px,92vw)] max-h-[80vh] overflow-hidden rounded-xl border border-[#E0D4BF] bg-[#F8F1E6] shadow-sm">
+                        <div className="px-4 py-3 border-b border-[#E0D4BF] flex items-center justify-between">
+                          <div className="text-sm font-semibold text-[#2F2A25]">
+                            Upload / Paste Recipe
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setHomePasteOpen(false)}
+                            className="text-xs text-[#8A6A3A] hover:underline"
+                          >
+                            Close
+                          </button>
+                        </div>
+                        <div className="p-4 space-y-3 overflow-auto max-h-[calc(80vh-52px)]">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHomePasteOpen(false);
+                              setCurrentView("library");
+                              setLibraryTab("recipes");
+                              void triggerRoleUpload("recipe");
+                            }}
+                            className="px-3 py-1.5 rounded-md bg-[#2F2A25] text-white hover:bg-[#4A331D] transition text-sm"
+                          >
+                            Upload file
+                          </button>
+
+                          <div className="text-xs text-[#8B7E6A]">
+                            Or paste text below:
+                          </div>
+                          <textarea
+                            value={homePasteText}
+                            onChange={(e) => setHomePasteText(e.target.value)}
+                            rows={8}
+                            className="w-full rounded-xl border border-[#E0D4BF] bg-[#FBF4E8] p-3 text-sm text-[#2F2A25] placeholder:text-[#8B7E6A] outline-none focus:ring-2 focus:ring-[#E0D4BF]"
+                            placeholder="Paste a recipe here…"
+                          />
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const text = homePasteText.trim();
+                                if (!text) return;
+                                const id = `paste-${Date.now()}-${crypto.randomUUID()}`;
+                                const name = "Pasted recipe";
+                                setUploadedFiles((prev) => [
+                                  {
+                                    id,
+                                    role: "recipe",
+                                    name,
+                                    type: "text/plain",
+                                    size: text.length,
+                                    lastModified: Date.now(),
+                                    extractedText: text,
+                                    extractionMethod: "text",
+                                    recipeFolderId: null,
+                                  } as any,
+                                  ...prev,
+                                ]);
+                                setHomePasteText("");
+                                setHomePasteOpen(false);
+                                setCurrentView("library");
+                                setLibraryTab("recipes");
+                              }}
+                              className="px-3 py-1.5 rounded-md bg-[#E8DFD0] hover:bg-[#DED4C3] text-[#4A331D] transition text-sm"
+                            >
+                              Add to Library
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHomePasteText("");
+                                setHomePasteOpen(false);
+                              }}
+                              className="text-xs text-[#8A6A3A] hover:underline"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* New Project / Event View */}
               {currentView === "new-project" && (
                 <div className="h-full">
-                  {activeEvent ? (
+                  {currentProject ? (
                     <NewProjectPage
-                      event={activeEvent}
-                      onUpdate={(updates) => updateEventProject(activeEvent.id, updates)}
+                      event={currentProject}
+                      isDraft={!!draftEvent}
+                      autoOpenUploadKey={autoOpenEventBriefUploadKey ?? undefined}
+                      ingestionStatus={
+                        eventIngestionById[currentProject.id] ?? { status: "not_started" }
+                      }
+                      onSave={draftEvent ? () => commitDraftEvent(draftEvent) : undefined}
+                      onUpdate={(updates) => updateCurrentProject(updates)}
                       onClose={() => {
-                        // When closing, create a fresh event for next time
                         setShowNewProjectPage(false);
                         setActiveEventId(null);
+                        setDraftEvent(null);
                       }}
                       onUpload={async (files) => {
+                        const project = currentProject;
+                        if (project) {
+                          setEventIngestionById((prev) => ({
+                            ...prev,
+                            [project.id]: {
+                              status: "processing",
+                              attemptedAt: Date.now(),
+                              extractedChars: 0,
+                              fileCount: files?.length ?? 0,
+                            },
+                          }));
+                        }
+
                         // Upload files, run OCR, and extract event details
                         const newIds: string[] = [];
                         let combinedText = "";
+                        let extractedChars = 0;
+                        let hadAnyOcrError = false;
 
                         for (const file of Array.from(files)) {
                           const id = `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`;
@@ -1352,6 +1837,7 @@ export default function DashboardPage() {
 
                           try {
                             let extractedText = "";
+                            let extractionError: string | null = null;
 
                             // Text files: extract locally
                             if (file.type === "text/plain" || file.name.endsWith(".md") || file.name.endsWith(".txt")) {
@@ -1360,25 +1846,35 @@ export default function DashboardPage() {
                             // Images: call OCR
                             else if (file.type.startsWith("image/")) {
                               const formData = new FormData();
-                              formData.append("file", file);
+                              formData.append("files", file);
                               formData.append("role", "event");
                               const res = await fetch("/api/arc/ocr", { method: "POST", body: formData });
                               if (res.ok) {
                                 const data = await res.json();
-                                extractedText = data.extractedText || "";
+                                // OCR API returns { files: [{ extractedText: "..." }] }
+                                extractedText = data.files?.[0]?.extractedText || "";
+                              } else {
+                                extractionError = `OCR failed (HTTP ${res.status}).`;
+                                hadAnyOcrError = true;
                               }
                             }
                             // PDFs: call PDF OCR
                             else if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
                               const formData = new FormData();
-                              formData.append("file", file);
+                              formData.append("files", file);
                               formData.append("role", "event");
                               const res = await fetch("/api/arc/ocr-pdf", { method: "POST", body: formData });
                               if (res.ok) {
                                 const data = await res.json();
-                                extractedText = data.extractedText || "";
+                                // OCR-PDF API returns { files: [{ extractedText: "..." }] }
+                                extractedText = data.files?.[0]?.extractedText || "";
+                              } else {
+                                extractionError = `OCR failed (HTTP ${res.status}).`;
+                                hadAnyOcrError = true;
                               }
                             }
+
+                            extractedChars += extractedText?.length ?? 0;
 
                             // Add to combined text for detail extraction
                             if (extractedText) {
@@ -1396,37 +1892,141 @@ export default function DashboardPage() {
                                 lastModified: file.lastModified,
                                 role: "event" as const,
                                 extractedText,
-                                extractionMethod: file.type.startsWith("image/") ? "ocr" : file.type === "application/pdf" ? "ocr-pdf" : "text",
+                                extractionError,
+                                extractionMethod: file.type.startsWith("image/") ? "ocr" : file.type === "application/pdf" ? "ocr" : "text",
                               },
                             ]);
                           } catch (err) {
                             console.error("Error processing file:", file.name, err);
+                            hadAnyOcrError = true;
+                            setUploadedFiles((prev) => [
+                              ...prev,
+                              {
+                                id,
+                                name: file.name,
+                                type: file.type,
+                                size: file.size,
+                                lastModified: file.lastModified,
+                                role: "event" as const,
+                                extractedText: "",
+                                extractionError: "OCR failed.",
+                                extractionMethod: file.type.startsWith("image/") ? "ocr" : file.type === "application/pdf" ? "ocr-pdf" : "text",
+                              } as any,
+                            ]);
                           }
                         }
 
+                        console.log(
+                          "[Event Ingestion] combinedText length =",
+                          combinedText.length
+                        );
+
+                        // 🔴 CRITICAL: Store OCR text on the event BEFORE AI extraction
+                        // This ensures text is always available even if extraction fails
+                        // Also set phase to clarify so user sees the review screen
+                        if (combinedText.trim()) {
+                          updateCurrentProject({
+                            extractedText: combinedText,
+                            phase: "clarify",
+                          });
+                        }
+
                         // Extract event details from combined text
-                        if (combinedText.trim() && activeEvent) {
+                        if (combinedText.trim() && project) {
                           try {
+                            const payload = {
+                              text: combinedText,
+                              existingDetails: project.details,
+                            };
+
+                            console.log(
+                              "🔍 [Event OCR] combinedText length BEFORE extract-event-details:",
+                              combinedText?.length
+                            );
+                            console.log(
+                              "🔍 [Event OCR] payload keys BEFORE send:",
+                              Object.keys(payload || {})
+                            );
+                            console.log(
+                              "✅ [Event OCR] sending extract-event-details text length:",
+                              payload.text.length
+                            );
+
                             const res = await fetch("/api/arc/extract-event-details", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({
-                                text: combinedText,
-                                existingDetails: activeEvent.details,
-                              }),
+                              body: JSON.stringify(payload),
                             });
                             if (res.ok) {
-                              const { details, unknowns, constraints } = await res.json();
-                              // Auto-fill event details
-                              updateEventProject(activeEvent.id, {
-                                details: { ...activeEvent.details, ...details },
-                                unknowns: [...new Set([...activeEvent.unknowns, ...(unknowns || [])])],
-                                constraints: [...new Set([...activeEvent.constraints, ...(constraints || [])])],
+                              const { details, unknowns, constraints, dietaryRequirements, notes } = await res.json();
+
+                              console.log("[extract-event-details] raw response:", {
+                                details,
+                                unknowns,
+                                constraints,
+                                dietaryRequirements,
+                                notes,
                               });
+
+                              // Map extracted fields into the exact shape Clarify expects
+                              const mappedDetails = {
+                                ...project.details,
+                                occasion: details?.occasion ?? project.details?.occasion,
+                                location: details?.location ?? project.details?.location,
+                                date: details?.date ?? project.details?.date,
+                                guests: details?.guests ?? project.details?.guests,
+                                pricingModel: details?.pricingModel ?? project.details?.pricingModel,
+                                priceAmount: details?.priceAmount ?? project.details?.priceAmount,
+                                currency: details?.currency ?? project.details?.currency,
+                                menuStyle: details?.menuStyle ?? project.details?.menuStyle,
+                                multiDay: details?.multiDay ?? project.details?.multiDay,
+                                numberOfDays: details?.numberOfDays ?? project.details?.numberOfDays,
+                                serviceStart: details?.serviceStart ?? project.details?.serviceStart,
+                                serviceEnd: details?.serviceEnd ?? project.details?.serviceEnd,
+                                dietaryRequirements: dietaryRequirements?.length > 0 
+                                  ? dietaryRequirements 
+                                  : (details?.dietaryRequirements ?? project.details?.dietaryRequirements),
+                                kitchen: details?.kitchen ?? project.details?.kitchen,
+                                seatingStyle: details?.seatingStyle ?? project.details?.seatingStyle,
+                                staffCount: details?.staffCount ?? project.details?.staffCount,
+                              };
+
+                              console.log("[event before update]", project);
+
+                              // Auto-fill event details + store raw OCR text + navigate to clarify
+                              updateCurrentProject({
+                                name: details?.eventName || project.name,
+                                details: mappedDetails,
+                                extractedText: combinedText || project.extractedText,
+                                unknowns: [...new Set([...(project.unknowns ?? []), ...(unknowns || [])])],
+                                constraints: [...new Set([...(project.constraints ?? []), ...(constraints || [])])],
+                                freeformNotes: notes || project.freeformNotes || "",
+                                phase: "clarify",
+                              } as any);
+
+                              setTimeout(() => {
+                                console.log("[event after update]", currentProject);
+                              }, 0);
                             }
                           } catch (err) {
                             console.error("Error extracting event details:", err);
                           }
+                        }
+
+                        if (project) {
+                          setEventIngestionById((prev) => ({
+                            ...prev,
+                            [project.id]: {
+                              status: hadAnyOcrError && extractedChars === 0 ? "failed" : "attempted",
+                              attemptedAt: Date.now(),
+                              extractedChars,
+                              fileCount: newIds.length,
+                              error:
+                                hadAnyOcrError && extractedChars === 0
+                                  ? "We couldn’t read text from this upload. Please review and fill in what’s missing."
+                                  : undefined,
+                            },
+                          }));
                         }
 
                         return newIds;
@@ -1434,6 +2034,7 @@ export default function DashboardPage() {
                       uploadedFiles={uploadedFiles.map((f) => ({
                         id: f.id,
                         name: f.name,
+                        role: f.role,
                         extractedText: f.extractedText,
                       }))}
                       recipes={recipeFiles.map((f) => ({
@@ -1442,6 +2043,12 @@ export default function DashboardPage() {
                         cuisine: f.recipeIntelligence?.cuisine,
                         category: f.recipeIntelligence?.dishCategory,
                         dietary: f.recipeIntelligence?.dietary,
+                        servings: f.canonicalRecipe?.servings?.value || undefined,
+                        ingredients: f.canonicalRecipe?.ingredients || f.recipeIntelligence?.ingredients?.map(i => ({
+                          name: i.name,
+                          quantity: i.quantity ?? null,
+                          unit: i.unit ?? null,
+                        })),
                       }))}
                       invoices={invoiceFiles.map((f) => ({
                         id: f.id,
@@ -1452,13 +2059,103 @@ export default function DashboardPage() {
                           unit: i.unit,
                         })),
                       }))}
+                      onUploadReportInvoice={async (file: File) => {
+                        // Upload invoice for report verification
+                        const project = currentProject;
+                        if (!project) return;
+                        
+                        const id = `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`;
+                        
+                        // Create FormData for invoice upload
+                        const formData = new FormData();
+                        formData.append("files", file);
+                        
+                        try {
+                          // Run OCR on invoice
+                          const isPdf = file.type === "application/pdf";
+                          const endpoint = isPdf ? "/api/arc/ocr-pdf" : "/api/arc/ocr";
+                          const ocrRes = await fetch(endpoint, {
+                            method: "POST",
+                            body: formData,
+                          });
+                          
+                          let extractedText = "";
+                          let invoiceData: any = null;
+                          
+                          if (ocrRes.ok) {
+                            const data = await ocrRes.json();
+                            extractedText = data.files?.[0]?.extractedText || "";
+                            
+                            // Parse invoice if we got text
+                            if (extractedText) {
+                              const parseRes = await fetch("/api/arc/parse-invoice", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ text: extractedText }),
+                              });
+                              
+                              if (parseRes.ok) {
+                                invoiceData = await parseRes.json();
+                              }
+                            }
+                          }
+                          
+                          // Create event invoice record
+                          const newInvoice = {
+                            id,
+                            name: file.name,
+                            uploadedAt: Date.now(),
+                            totalAmount: invoiceData?.total,
+                            vendor: invoiceData?.vendor,
+                            items: invoiceData?.items?.map((item: any) => ({
+                              name: item.name,
+                              quantity: item.quantity,
+                              unit: item.unit,
+                              unitPrice: item.unitPrice,
+                              total: item.total || (item.quantity * item.unitPrice) || 0,
+                            })),
+                          };
+                          
+                          // Update project with new invoice
+                          updateCurrentProject({
+                            invoices: [...(project.invoices || []), newInvoice],
+                          });
+                          
+                          // Also add to uploaded files for library
+                          setUploadedFiles((prev) => [
+                            ...prev,
+                            {
+                              id,
+                              name: file.name,
+                              type: file.type,
+                              size: file.size,
+                              lastModified: file.lastModified,
+                              role: "invoice" as const,
+                              extractedText,
+                              extractionMethod: "ocr" as const,
+                              invoiceIntelligence: invoiceData,
+                            },
+                          ]);
+                          
+                        } catch (err) {
+                          console.error("Invoice upload failed:", err);
+                        }
+                      }}
+                      onRemoveReportInvoice={(invoiceId: string) => {
+                        const project = currentProject;
+                        if (!project) return;
+                        
+                        updateCurrentProject({
+                          invoices: (project.invoices || []).filter((inv: any) => inv.id !== invoiceId),
+                        });
+                      }}
                     />
                   ) : (
-                    /* Loading state while auto-creating event */
-                    <div className="flex items-center justify-center h-full">
+                    <div className="h-full flex items-center justify-center bg-[#FAF8F4]">
                       <div className="text-center">
-                        <div className="animate-pulse text-4xl mb-4">📋</div>
-                        <p className="text-sm text-[#8B7E6A]">Setting up your project...</p>
+                        <div className="animate-pulse text-[#8B7E6A] text-sm">
+                          Starting new event...
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1485,20 +2182,49 @@ export default function DashboardPage() {
             <h2 className="text-[13px] font-semibold" style={{ color: "#4A331D" }}>
           ARC — Conversation
         </h2>
-            <button
-              onClick={() => setShowChat(false)}
-              className="text-[11px] text-[#8A6A3A] hover:underline"
-            >
-              Hide
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  // Explicit user action: bring focus to the chat box (ARC should not speak unless the chef asks).
+                  requestAnimationFrame(() => {
+                    const root = chatRootRef.current;
+                    const textarea = root?.querySelector("textarea") as HTMLTextAreaElement | null;
+                    textarea?.focus();
+                  });
+                }}
+                className="text-[11px] text-[#8A6A3A] hover:underline"
+              >
+                Ask ARC
+              </button>
+              <button
+                onClick={() => setShowChat(false)}
+                className="text-[11px] text-[#8A6A3A] hover:underline"
+              >
+                Hide
+              </button>
+            </div>
           </div>
 
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div ref={chatRootRef} className="flex-1 min-h-0 overflow-hidden">
           <ARCChat
               uploadedFiles={uploadedFiles}
               setUploadedFiles={setUploadedFiles}
               arcState={arcState}
               setArcState={setArcState}
+              allowAutoClarifications={false}
+              eventContext={
+                currentView === "new-project" && currentProject
+                  ? {
+                      name: currentProject.name,
+                      details: currentProject.details,
+                      unknowns: currentProject.unknowns,
+                      constraints: currentProject.constraints,
+                      freeformNotes: currentProject.freeformNotes,
+                    }
+                  : undefined
+              }
+              onUpdateEventContext={(updates) => updateCurrentProject(updates as any)}
           />
         </div>
       </div>

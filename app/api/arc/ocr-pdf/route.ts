@@ -155,6 +155,8 @@ async function extractPdfTextViaVision({
 
 export async function POST(req: Request) {
   try {
+    console.log("[OCR:pdf] route hit");
+
     const bucket = process.env.GCS_OCR_BUCKET;
     if (!bucket) {
       console.error("[ocr-pdf] Missing GCS_OCR_BUCKET environment variable");
@@ -191,6 +193,16 @@ export async function POST(req: Request) {
     const role = String(formData.get("role") || "note");
     const files = formData.getAll("files") as File[];
 
+    console.log("[OCR:pdf] files.length =", files.length);
+    console.log(
+      "[OCR:pdf] file meta =",
+      (files ?? []).map((f: any) => ({
+        name: f?.name,
+        type: f?.type,
+        size: f?.size,
+      }))
+    );
+
     console.log(`[ocr-pdf] Files to process: ${files.length}, role: ${role}`);
 
     if (!files || files.length === 0) {
@@ -209,6 +221,10 @@ export async function POST(req: Request) {
       try {
         const result = await extractPdfTextViaVision({ bucket, file, role });
         console.log(`[ocr-pdf] Success for ${file.name}, extracted ${result.extractedText?.length ?? 0} chars`);
+        console.log(
+          "[OCR:pdf] extractedText length =",
+          result.extractedText?.length ?? 0
+        );
         results.push(result);
       } catch (err: any) {
         console.error(`[ocr-pdf] Error processing ${file.name}:`, err?.message || err);

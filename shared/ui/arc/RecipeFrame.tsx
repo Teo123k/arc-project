@@ -9,6 +9,9 @@ type Course = "starter" | "main" | "dessert" | "other";
 type UploadedFileLike = {
   id: string;
   name: string;
+  type?: string;
+  extractionMethod?: "text" | "ocr" | "csv" | "unsupported";
+  recipeFolderId?: string | null;
   canonicalRecipe?: CanonicalRecipe;
   recipeIntelligence?: {
     cuisine?: string;
@@ -23,6 +26,7 @@ type Props = {
   file: UploadedFileLike | null;
   onHide: () => void;
   onUpdate: (next: UploadedFileLike) => void;
+  onCreateMyRecipeFromThis?: (sourceId: string) => void;
 };
 
 function clampCourse(value: string): Course {
@@ -66,6 +70,7 @@ export function RecipeFrame({ file, onHide, onUpdate }: Props) {
   const historyRef = useRef<CanonicalRecipe[]>([]);
 
   const recipe = file?.canonicalRecipe;
+  const isInspiration = file?.recipeFolderId === "__inspiration__";
 
   // Fix dietary display - check both sources
   const dietaryText = useMemo(() => {
@@ -324,12 +329,19 @@ export function RecipeFrame({ file, onHide, onUpdate }: Props) {
         {/* Header - title + controls on same row */}
         <div className="px-4 py-2 border-b border-[#E0D4BF] bg-[#FAF2E6]">
           <div className="flex items-center justify-between gap-3 mb-2">
-            <input
-              className="flex-1 min-w-0 bg-transparent text-[15px] font-semibold text-[#2F2A25] outline-none"
-              value={recipe.title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Recipe title"
-            />
+            <div className="flex-1 min-w-0 flex items-center gap-2">
+              <input
+                className="flex-1 min-w-0 bg-transparent text-[15px] font-semibold text-[#2F2A25] outline-none"
+                value={recipe.title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Recipe title"
+              />
+              {isInspiration && (
+                <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-full border border-[#E0D4BF] bg-white/60 text-[#6F6352]">
+                  Inspiration
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-1 shrink-0">
               <button
                 onClick={goPrev}
@@ -347,6 +359,18 @@ export function RecipeFrame({ file, onHide, onUpdate }: Props) {
               >
                 ▶
               </button>
+              {isInspiration && (
+                <button
+                  onClick={() => {
+                    if (!file) return;
+                    onCreateMyRecipeFromThis?.(file.id);
+                  }}
+                  className="text-[11px] h-6 px-2 rounded border border-[#C5B8A5] bg-[#E8DFD0] text-[#3D2E1F] hover:bg-[#DED4C3] ml-2"
+                  title="Duplicate this inspiration recipe into My Recipes"
+                >
+                  Create My Recipe from This
+                </button>
+              )}
               <button
                 onClick={onHide}
                 className="text-[11px] h-6 px-2 rounded border border-[#C5B8A5] bg-white text-[#3D2E1F] hover:bg-[#F5ECDD] ml-2"
@@ -455,7 +479,11 @@ export function RecipeFrame({ file, onHide, onUpdate }: Props) {
             ) : isIngredientsPage ? (
               <div className="h-full flex flex-col">
                 <div className="px-3 py-2 text-[10px] uppercase tracking-wide text-[#8B7E6A] bg-white/70 flex items-center justify-between">
-                  <span>Ingredients</span>
+                  <span>
+                    {isInspiration
+                      ? "Extracted ingredients (review recommended)"
+                      : "Ingredients"}
+                  </span>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={undo}
@@ -563,7 +591,9 @@ export function RecipeFrame({ file, onHide, onUpdate }: Props) {
             ) : isStepsPage ? (
               <div className="h-full flex flex-col">
                 <div className="px-3 py-2 text-[10px] uppercase tracking-wide text-[#8B7E6A] bg-white/70 flex items-center justify-between">
-                  <span>Steps</span>
+                  <span>
+                    {isInspiration ? "Steps detected — formatting may vary" : "Steps"}
+                  </span>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={undo}

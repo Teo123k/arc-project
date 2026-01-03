@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from "react";
 
+const INSPIRATION_FOLDER_ID = "__inspiration__";
+
 export type RecipeFolder = {
   id: string;
   name: string;
@@ -52,6 +54,7 @@ export function RecipeFileTree({
 }: Props) {
   const [isCreating, setIsCreating] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const hasInspirationFolder = folders.some((f) => f.id === INSPIRATION_FOLDER_ID);
 
   const groupedFolders = useMemo(() => {
     const sorted = [...folders].sort((a, b) => a.name.localeCompare(b.name));
@@ -136,8 +139,20 @@ export function RecipeFileTree({
             }`}
             onClick={() => onSelect({ kind: "all" })}
           >
-            All recipes
+            My recipes
           </button>
+          {hasInspirationFolder && (
+            <button
+              className={`w-full text-left px-2 py-1 rounded text-[12px] ${
+                isActive(selection, { kind: "folder", folderId: INSPIRATION_FOLDER_ID })
+                  ? "bg-[#E8DFD0] font-medium"
+                  : "hover:bg-[#F5ECDD]"
+              }`}
+              onClick={() => onSelect({ kind: "folder", folderId: INSPIRATION_FOLDER_ID })}
+            >
+              Inspiration
+            </button>
+          )}
         </div>
 
         <div className="mt-3">
@@ -165,32 +180,36 @@ export function RecipeFileTree({
                         >
                           <span className="truncate">{f.name}</span>
                         </button>
-                        <button
-                          className="shrink-0 text-[11px] text-[#8A6A3A] hover:underline px-1"
-                          onClick={() => {
-                            const nextName = window.prompt("Rename folder:", f.name);
-                            if (!nextName) return;
-                            const trimmed = nextName.trim();
-                            if (!trimmed) return;
-                            onRenameFolder(f.id, trimmed);
-                          }}
-                          title="Rename"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="shrink-0 text-[11px] text-[#8A6A3A] hover:underline px-1"
-                          onClick={() => {
-                            const ok = window.confirm(
-                              `Delete folder "${f.name}"?\n\nRecipes will be moved to Unsorted (not deleted).`
-                            );
-                            if (!ok) return;
-                            onDeleteFolder(f.id);
-                          }}
-                          title="Delete folder"
-                        >
-                          Remove
-                        </button>
+                        {f.id !== INSPIRATION_FOLDER_ID && (
+                          <>
+                            <button
+                              className="shrink-0 text-[11px] text-[#8A6A3A] hover:underline px-1"
+                              onClick={() => {
+                                const nextName = window.prompt("Rename folder:", f.name);
+                                if (!nextName) return;
+                                const trimmed = nextName.trim();
+                                if (!trimmed) return;
+                                onRenameFolder(f.id, trimmed);
+                              }}
+                              title="Rename"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="shrink-0 text-[11px] text-[#8A6A3A] hover:underline px-1"
+                              onClick={() => {
+                                const ok = window.confirm(
+                                  `Delete folder "${f.name}"?\n\nRecipes will be moved to Unsorted (not deleted).`
+                                );
+                                if (!ok) return;
+                                onDeleteFolder(f.id);
+                              }}
+                              title="Delete folder"
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
                       </div>
                     ))}
                   </div>

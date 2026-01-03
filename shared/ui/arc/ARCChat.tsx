@@ -6,6 +6,7 @@ import { reconcileProcurement } from "@/app/lib/arc/procurementReconciliation";
 import { resolveCanonicalRecipe, type CanonicalRecipe } from "@/app/lib/arc/recipe/resolveCanonicalRecipe";
 import { computeServingsFromIngredients } from "@/app/lib/arc/recipe/servingsFromIngredients";
 import { humanizeReply, normalizeARCOutput } from "@/app/lib/core/ai/outputNormalization";
+import type { EventDetails } from "@/app/lib/core/shared/types";
 import {
   buildCuisineDietaryPrompt,
   buildStructuredRecipeExtractionPrompt,
@@ -397,6 +398,22 @@ interface ARCChatProps {
   setUploadedFiles: React.Dispatch<React.SetStateAction<UploadedFile[]>>;
   arcState: ARCState;
   setArcState: React.Dispatch<React.SetStateAction<ARCState>>;
+  // If false (default), ARCChat must not proactively inject assistant "check"/question messages.
+  allowAutoClarifications?: boolean;
+  // Optional: allow chat to update the current event brief (non-blocking) using existing extract-event-details.
+  eventContext?: {
+    name: string;
+    details: EventDetails;
+    unknowns?: string[];
+    constraints?: string[];
+    freeformNotes?: string;
+  };
+  onUpdateEventContext?: (updates: {
+    details?: EventDetails;
+    unknowns?: string[];
+    constraints?: string[];
+    freeformNotes?: string;
+  }) => void;
 }
 
 /* ---------- helpers ---------- */
@@ -442,6 +459,9 @@ export default function ARCChat({
   setUploadedFiles,
   arcState,
   setArcState,
+  allowAutoClarifications = false,
+  eventContext,
+  onUpdateEventContext,
 }: ARCChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -475,6 +495,83 @@ export default function ARCChat({
       cooldownUntil: cooldownUntilRef.current,
     });
   };
+
+  const eventContextRef = useRef<typeof eventContext | null>(null);
+  const onUpdateEventContextRef = useRef<typeof onUpdateEventContext | null>(null);
+
+  useEffect(() => {
+    eventContextRef.current = eventContext ?? null;
+  }, [eventContext]);
+
+  useEffect(() => {
+    onUpdateEventContextRef.current = onUpdateEventContext ?? null;
+  }, [onUpdateEventContext]);
+
+  async function maybeUpdateEventBriefFromChatText(userText: string) {
+    const ctx = eventContextRef.current;
+    const updater = onUpdateEventContextRef.current;
+    if (!ctx || !updater) return;
+
+    try {
+      const res = await fetch("/api/arc/extract-event-details", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: userText,
+          existingDetails: ctx.details,
+        }),
+      });
+      if (!res.ok) return;
+
+      const data = await res.json().catch(() => null);
+      if (!data || typeof data !== "object") return;
+
+      const details = (data as any).details;
+      const unknowns = (data as any).unknowns;
+      const constraints = (data as any).constraints;
+
+      const nextDetails =
+        details && typeof details === "object" ? { ...ctx.details, ...details } : ctx.details;
+
+      const nextUnknowns = Array.from(
+        new Set<string>([
+          ...((ctx.unknowns ?? []) as string[]),
+          ...(Array.isArray(unknowns) ? unknowns : []),
+        ])
+      );
+
+      const nextConstraints = Array.from(
+        new Set<string>([
+          ...((ctx.constraints ?? []) as string[]),
+          ...(Array.isArray(constraints) ? constraints : []),
+        ])
+      );
+
+      updater({
+        details: nextDetails,
+        unknowns: nextUnknowns,
+        constraints: nextConstraints,
+      });
+    } catch {
+      // Non-blocking: ignore failures.
+    }
+  }
+
+  function maybeAppendEventNotesFromChatText(userText: string) {
+    const ctx = eventContextRef.current;
+    const updater = onUpdateEventContextRef.current;
+    if (!ctx || !updater) return;
+
+    const trimmed = (userText || "").trim();
+    if (!trimmed) return;
+
+    const existing = (ctx.freeformNotes || "").trim();
+    // Avoid duplicating the exact same line repeatedly.
+    if (existing.includes(trimmed)) return;
+
+    const next = existing ? `${existing}\n\n${trimmed}` : trimmed;
+    updater({ freeformNotes: next });
+  }
 
   /* keep scroll pinned */
   useEffect(() => {
@@ -657,6 +754,11 @@ export default function ARCChat({
     requestAnimationFrame(() => inputRef.current?.focus());
 
     try {
+      // Non-blocking: attempt to update the current event brief from user chat (if context is provided).
+      void maybeUpdateEventBriefFromChatText(userText);
+      // Non-blocking: capture chef chat input as notes on the current event (if context is provided).
+      maybeAppendEventNotesFromChatText(userText);
+
       // Check if this is a source query (file lookup question)
       const isSource = isSourceQuery(userText);
 
@@ -839,6 +941,11 @@ export default function ARCChat({
     };
 
     setArcState((prev) => ({ ...prev, normalizedCosts }));
+
+    if (!allowAutoClarifications) {
+      clarificationSentRef.current = "";
+      return;
+    }
 
     if (reconciliation.ambiguousIngredients.length > 0 && !sending) {
       const ambiguousFingerprint = reconciliation.ambiguousIngredients.sort().join("|");

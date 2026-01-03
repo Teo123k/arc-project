@@ -9,7 +9,16 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  */
 export async function POST(req: NextRequest) {
   try {
+    console.log("[extract-event-details] route hit");
     const { text, existingDetails } = await req.json();
+    console.log(
+      "[extract-event-details] input text length =",
+      text?.length ?? 0
+    );
+    console.log(
+      "📥 [extract-event-details] received text length:",
+      text?.length ?? 0
+    );
 
     if (!text || typeof text !== "string" || text.trim().length === 0) {
       return NextResponse.json({ details: existingDetails || {} });
@@ -18,6 +27,7 @@ export async function POST(req: NextRequest) {
     const systemPrompt = `You are an AI assistant helping a professional chef extract event details from client briefs, emails, or notes.
 
 Extract the following fields if mentioned (leave null if not found):
+- eventName: A short, human-friendly name for the event. Use client names, company names, or occasion if present. Examples: "Johnson Wedding", "Acme Corp Holiday Party", "Private Birthday Dinner"
 - occasion: Type of event (e.g., "Wedding", "Corporate event", "Birthday party", "Private dinner", "Pop-up event", "Anniversary dinner")
 - guests: Number of guests (integer)
 - location: Venue or location name/address
@@ -31,8 +41,17 @@ Extract the following fields if mentioned (leave null if not found):
 - numberOfDays: Number of days if multi-day event
 - menuStyle: Type of service ("course_meal", "buffet", "street_food", or null)
 - dietaryRequirements: Array of dietary requirements mentioned (e.g., ["vegetarian", "gluten-free"])
-- constraints: Array of constraints or special requirements
-- unknowns: Array of things that need clarification
+- constraints: Array of constraints or special requirements (e.g., "no shellfish", "kosher", "outdoor setup")
+- unknowns: Array of things that need clarification or are missing
+- notes: Any additional notes, comments, or context that should be preserved (as a string)
+- kitchen: Kitchen situation object with these boolean fields:
+  - onSitePrep: true if on-site kitchen/prep is available
+  - externalKitchen: true if external/commissary kitchen is required
+  - transportRequired: true if food transport is needed
+- staffCount: Number of staff mentioned (integer)
+- seatingStyle: Seating arrangement (e.g., "banquet", "cocktail", "theater", "classroom", "family-style")
+
+If a field is not clearly stated, omit it. Do not invent details.
 
 Respond with ONLY valid JSON, no markdown.`;
 
@@ -71,6 +90,7 @@ ${existingDetails ? `\nExisting details (preserve if not contradicted):\n${JSON.
     const merged: Record<string, unknown> = { ...(existingDetails || {}) };
 
     // Map extracted fields to our EventDetails structure
+    if (extracted.eventName) merged.eventName = extracted.eventName;
     if (extracted.occasion) merged.occasion = extracted.occasion;
     if (extracted.guests && typeof extracted.guests === "number") merged.guests = extracted.guests;
     if (extracted.location) merged.location = extracted.location;
@@ -86,16 +106,27 @@ ${existingDetails ? `\nExisting details (preserve if not contradicted):\n${JSON.
     if (extracted.numberOfDays) merged.numberOfDays = extracted.numberOfDays;
     if (extracted.menuStyle) merged.menuStyle = extracted.menuStyle;
 
+    // Kitchen situation
+    if (extracted.kitchen && typeof extracted.kitchen === "object") {
+      merged.kitchen = extracted.kitchen;
+    }
+
+    // Seating and staff
+    if (extracted.seatingStyle) merged.seatingStyle = extracted.seatingStyle;
+    if (extracted.staffCount && typeof extracted.staffCount === "number") merged.staffCount = extracted.staffCount;
+
     // Additional metadata
     const unknowns = Array.isArray(extracted.unknowns) ? extracted.unknowns : [];
     const constraints = Array.isArray(extracted.constraints) ? extracted.constraints : [];
     const dietaryRequirements = Array.isArray(extracted.dietaryRequirements) ? extracted.dietaryRequirements : [];
+    const notes = typeof extracted.notes === "string" ? extracted.notes : "";
 
     return NextResponse.json({
       details: merged,
       unknowns,
       constraints,
       dietaryRequirements,
+      notes,
     });
   } catch (error) {
     console.error("[extract-event-details] Error:", error);
@@ -105,6 +136,7 @@ ${existingDetails ? `\nExisting details (preserve if not contradicted):\n${JSON.
     );
   }
 }
+
 
 
 

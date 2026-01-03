@@ -45,6 +45,9 @@ interface VerdictPageProps {
   verdictNotes?: string;
   onVerdict: (verdict: EventVerdict, notes?: string) => void;
   onGoBack: (phase: string) => void;
+  // Invoice status
+  costComplete?: boolean; // true = all ingredients invoice-backed
+  unpricedIngredientCount?: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -64,14 +67,18 @@ export function VerdictPage({
   verdictNotes,
   onVerdict,
   onGoBack,
+  costComplete = true,
+  unpricedIngredientCount = 0,
 }: VerdictPageProps) {
   const [notes, setNotes] = useState(verdictNotes || "");
   const [selectedVerdict, setSelectedVerdict] = useState<EventVerdict>(currentVerdict);
   const [aiRecommendation, setAIRecommendation] = useState<AIRecommendation | null>(null);
   const [loadingAI, setLoadingAI] = useState(false);
 
-  const margin = revenue && totalCost ? revenue - totalCost : null;
-  const marginPercent = revenue && totalCost ? Math.round(((revenue - totalCost) / revenue) * 100) : null;
+  // Cost calculations only valid when complete
+  const costIsValid = costComplete && totalCost !== undefined;
+  const margin = revenue && costIsValid ? revenue - totalCost : null;
+  const marginPercent = revenue && costIsValid ? Math.round(((revenue - totalCost) / revenue) * 100) : null;
 
   const handleConfirm = () => {
     if (selectedVerdict) {
@@ -139,8 +146,20 @@ export function VerdictPage({
       {/* Main content */}
       <div className="flex-1 overflow-auto p-6">
         <div className="max-w-2xl mx-auto space-y-6">
-          {/* Quick summary */}
-          {(totalCost || revenue) && (
+          {/* Financial summary with provenance */}
+          {!costComplete && unpricedIngredientCount > 0 ? (
+            <div className="p-5 bg-amber-50/50 border border-amber-200 rounded-lg text-center">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <span className="text-xl">🔒</span>
+                <span className="text-amber-800 font-medium">
+                  Financial summary incomplete — awaiting invoices.
+                </span>
+              </div>
+              <p className="text-sm text-amber-700">
+                {unpricedIngredientCount} ingredient{unpricedIngredientCount > 1 ? "s" : ""} awaiting invoice
+              </p>
+            </div>
+          ) : (totalCost || revenue) && (
             <div className="grid grid-cols-3 gap-4">
               {revenue && (
                 <div className="p-4 bg-white border border-[#E0D4BF] rounded-lg text-center">
@@ -148,22 +167,25 @@ export function VerdictPage({
                   <div className="text-lg font-bold text-[#2F2A25]">
                     {details.currency || "LKR"} {revenue.toLocaleString()}
                   </div>
+                  <div className="text-xs text-[#A89D8A]">From event brief</div>
                 </div>
               )}
-              {totalCost && (
+              {costIsValid && (
                 <div className="p-4 bg-white border border-[#E0D4BF] rounded-lg text-center">
                   <div className="text-xs text-[#8B7E6A] uppercase tracking-wider mb-1">Cost</div>
                   <div className="text-lg font-bold text-[#2F2A25]">
                     {details.currency || "LKR"} {totalCost.toLocaleString()}
                   </div>
+                  <div className="text-xs text-green-600">✓ Invoice-backed</div>
                 </div>
               )}
-              {margin !== null && (
+              {margin !== null && marginPercent !== null && (
                 <div className="p-4 bg-white border border-[#E0D4BF] rounded-lg text-center">
                   <div className="text-xs text-[#8B7E6A] uppercase tracking-wider mb-1">Margin</div>
-                  <div className={`text-lg font-bold ${marginPercent && marginPercent >= 25 ? "text-green-600" : marginPercent && marginPercent >= 15 ? "text-amber-600" : "text-red-600"}`}>
+                  <div className="text-lg font-bold text-[#2F2A25]">
                     {marginPercent}%
                   </div>
+                  <div className="text-xs text-[#A89D8A]">Revenue − Cost</div>
                 </div>
               )}
             </div>
@@ -189,7 +211,7 @@ export function VerdictPage({
                 onClick={() => onGoBack("risk")}
                 className="mt-3 text-sm text-amber-800 hover:text-amber-900 underline"
               >
-                Review risks →
+                Review Cost Reality →
               </button>
             </div>
           )}
@@ -378,13 +400,17 @@ export function VerdictPage({
           {selectedVerdict === "adjust" && (
             <div className="text-center pt-2">
               <span className="text-sm text-[#8B7E6A]">Go back to: </span>
-              {["menu", "cost", "risk"].map((phase) => (
+              {[
+                { phase: "menu", label: "Menu Design" },
+                { phase: "cost", label: "Execution Plan" },
+                { phase: "risk", label: "Cost Reality" },
+              ].map(({ phase, label }) => (
                 <button
                   key={phase}
                   onClick={() => onGoBack(phase)}
                   className="text-sm text-[#4A331D] hover:underline mx-2"
                 >
-                  {phase.charAt(0).toUpperCase() + phase.slice(1)}
+                  {label}
                 </button>
               ))}
             </div>

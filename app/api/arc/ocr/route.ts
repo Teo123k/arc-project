@@ -14,9 +14,21 @@ function getVisionClient() {
 
 export async function POST(req: Request) {
   try {
+    console.log("[OCR:image] route hit");
+
     const formData = await req.formData();
     const role = String(formData.get("role") || "note");
     const files = formData.getAll("files") as File[];
+
+    console.log("[OCR:image] files.length =", files.length);
+    console.log(
+      "[OCR:image] file meta =",
+      (files ?? []).map((f: any) => ({
+        name: f?.name,
+        type: f?.type,
+        size: f?.size,
+      }))
+    );
 
     if (!files || files.length === 0) {
       return NextResponse.json({ files: [] });
@@ -60,6 +72,11 @@ export async function POST(req: Request) {
         const extractedText =
           (simpleText?.length ?? 0) > (docText?.length ?? 0) ? simpleText : docText;
         
+        console.log(
+          "[OCR:image] extractedText length =",
+          extractedText?.length ?? 0
+        );
+
         console.log(`[ocr] file: ${file.name}, final extractedText length: ${extractedText?.length ?? 0}`);
         if (role === "invoice") {
           console.log(`[ocr] file: ${file.name}, extractedText preview:\n${extractedText?.slice(0, 800) ?? "(empty)"}`);

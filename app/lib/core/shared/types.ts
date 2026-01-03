@@ -158,6 +158,9 @@ export type EventDetails = {
   menuStyle?: EventMenuStyle;
   // Dietary requirements extracted from brief
   dietaryRequirements?: string[];
+  // Seating & staffing
+  seatingStyle?: string;
+  staffCount?: number;
 };
 
 export type EventMenuCourse = {
@@ -172,14 +175,41 @@ export type EventMenu = {
   prepTimeEstimate?: number; // hours
 };
 
+// Shopping List (derived from Menu, consumed by Cost)
+export type ShoppingListItem = {
+  ingredientName: string;
+  quantity: number;
+  unit: string;
+  sources: string[];  // Recipe names this ingredient came from
+  category?: "fresh" | "dry" | "other";
+};
+
+export type MatchConfidence = "exact" | "unit-converted" | "alias" | "none";
+
+export type CostItemAudit = {
+  source: "invoice" | "historical-invoice" | "manual" | "unknown";
+  confidence: MatchConfidence;
+  invoiceId?: string;
+  invoiceVendor?: string;
+  timestamp?: string;
+  unitConverted?: boolean;
+  aliasUsed?: boolean;
+};
+
 export type EventCostItem = {
   ingredientName: string;
   quantity: number;
   unit: string;
   unitPrice: number;
-  source: "invoice" | "market_avg" | "manual";
+  source: "invoice" | "historical-invoice" | "manual" | "unknown";
   total: number;
   verified: boolean;
+  // Flag for ingredients without pricing data
+  priceUnknown?: boolean;
+  // Flag for cost items no longer in shopping list (preserved for manual prices)
+  orphaned?: boolean;
+  // Audit trail for traceability
+  audit?: CostItemAudit;
 };
 
 export type EventCostBreakdown = {
@@ -218,32 +248,55 @@ export type EventProject = {
   updatedAt: number;
   phase: EventProjectPhase;
   
-  // Phase 1: Idea
+  // Notes (internal: idea)
   freeformNotes: string;
   uploadedFileIds: string[];
   
-  // Phase 2: Clarify
+  // Event Brief (internal: clarify)
   details: EventDetails;
-  unknowns: string[];
+  unknowns: string[];        // "To confirm" items
   constraints: string[];
+  extractedText?: string;    // Raw OCR text from uploaded briefs
   
-  // Phase 3: Menu
+  // Menu Design (internal: menu)
   menu: EventMenu;
   
-  // Phase 4: Cost & Operations
+  // Shopping List (derived from menu, consumed by cost)
+  shoppingList: ShoppingListItem[];
+  
+  // Execution Plan (internal: cost) - operations timeline + prep
   costBreakdown: EventCostBreakdown | null;
   operations: EventOperationsTimeline | null;
   
-  // Phase 5: Risk
+  // Cost Reality (internal: risk) - actual costs + risk assessment
   risks: EventRisk[];
   
-  // Phase 6: Verdict
+  // Decision (internal: verdict)
   verdict: EventVerdict;
   verdictNotes?: string;
   verdictDate?: number;
   
+  // Client Output (internal: report) - final report + invoices
+  invoices?: EventInvoice[];
+  
   // Folder organization
   folderId?: string | null;
+};
+
+// Event invoice for financial verification in report phase
+export type EventInvoice = {
+  id: string;
+  name: string;
+  uploadedAt: number;
+  totalAmount?: number;
+  vendor?: string;
+  items?: Array<{
+    name: string;
+    quantity?: number;
+    unit?: string;
+    unitPrice?: number;
+    total: number;
+  }>;
 };
 
 export type EventFolder = {
@@ -252,6 +305,21 @@ export type EventFolder = {
   createdAt: number;
   isHeader?: boolean;
   parentId?: string | null;
+};
+
+// Historical price entry for learning (DIFF 9 - silent backend capture)
+export type HistoricalPriceEntry = {
+  id: string;
+  ingredientKey: string;        // Normalized ingredient name
+  ingredientOriginal: string;   // Original name as entered
+  canonicalUnit: "g" | "ml" | "each";
+  pricePerCanonicalUnit: number;
+  currency: string;
+  region?: string;
+  invoiceId: string;
+  invoiceVendor?: string;
+  invoiceDate?: string;
+  capturedAt: string;           // ISO timestamp
 };
 
 

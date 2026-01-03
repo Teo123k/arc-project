@@ -141,4 +141,16 @@ export function saveEventFolders(key: string, eventFolders: EventFolder[]) {
   localStorage.setItem(key, JSON.stringify(eventFolders));
 }
 
+export function loadString(key: string): string | null {
+  return localStorage.getItem(key);
+}
+
+export function saveString(key: string, value: string) {
+  localStorage.setItem(key, value);
+}
+
+export function removeKey(key: string) {
+  localStorage.removeItem(key);
+}
+
 

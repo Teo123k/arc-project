@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 
 // ────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -33,6 +33,8 @@ type EventMenu = {
   guestCount: number;
 };
 
+type CostItemSource = "estimate" | "invoice" | "manual";
+
 type EventCostBreakdown = {
   ingredients: Array<{
     ingredientName: string;
@@ -40,12 +42,16 @@ type EventCostBreakdown = {
     unit: string;
     unitPrice: number;
     total: number;
+    source?: CostItemSource;
+    invoiceId?: string;
   }>;
   subtotal: number;
   markupPercent?: number;
   markup?: number;
   staffCost?: number;
+  staffCostSource?: CostItemSource;
   transportCost?: number;
+  transportCostSource?: CostItemSource;
   total: number;
 };
 
@@ -71,6 +77,21 @@ type Recipe = {
   description?: string;
 };
 
+type EventInvoice = {
+  id: string;
+  name: string;
+  uploadedAt: number;
+  totalAmount?: number;
+  vendor?: string;
+  items?: Array<{
+    name: string;
+    quantity?: number;
+    unit?: string;
+    unitPrice?: number;
+    total: number;
+  }>;
+};
+
 interface EventReportProps {
   eventName: string;
   details: EventDetails;
@@ -84,6 +105,10 @@ interface EventReportProps {
   verdictDate?: number;
   viewMode?: "chef" | "client" | "venue";
   onExport?: (format: "pdf" | "excel" | "email" | "whatsapp") => void;
+  // Invoice support
+  invoices?: EventInvoice[];
+  onUploadInvoice?: (file: File) => Promise<void>;
+  onRemoveInvoice?: (invoiceId: string) => void;
 }
 
 const COURSE_LABELS: Record<string, string> = {
@@ -111,8 +136,14 @@ export function EventReport({
   verdictDate,
   viewMode = "chef",
   onExport,
+  invoices = [],
+  onUploadInvoice,
+  onRemoveInvoice,
 }: EventReportProps) {
   const currency = details.currency || "LKR";
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [showInvoices, setShowInvoices] = useState(false);
 
   // Calculate revenue
   const revenue = useMemo(() => {
@@ -144,6 +175,64 @@ export function EventReport({
 
   // Filter risks for display
   const significantRisks = risks.filter((r) => r.severity !== "ok");
+
+  // Determine report status based on invoice coverage
+  const reportStatus = useMemo(() => {
+    if (!costBreakdown || !costBreakdown.ingredients.length) return "incomplete";
+    
+    // Count items with invoice-verified prices
+    const invoiceVerifiedCount = costBreakdown.ingredients.filter(
+      (i) => i.source === "invoice" || i.source === "manual"
+    ).length;
+    
+    const totalItems = costBreakdown.ingredients.length;
+    
+    // "complete" only if ALL items are priced
+    if (invoiceVerifiedCount === totalItems) {
+      return "complete";
+    }
+    
+    // "partial" if some items priced
+    if (invoiceVerifiedCount > 0) {
+      return "partial";
+    }
+    
+    return "incomplete";
+  }, [costBreakdown, invoices]);
+
+  // Count verified vs awaiting items
+  const costStats = useMemo(() => {
+    if (!costBreakdown) return { verified: 0, awaiting: 0, total: 0 };
+    
+    const verified = costBreakdown.ingredients.filter(
+      i => i.source === "invoice" || i.source === "manual"
+    ).length;
+    const total = costBreakdown.ingredients.length;
+    
+    return {
+      verified,
+      awaiting: total - verified,
+      total,
+    };
+  }, [costBreakdown]);
+
+  // Handle invoice file upload
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !onUploadInvoice) return;
+    
+    setUploading(true);
+    try {
+      await onUploadInvoice(file);
+    } catch (err) {
+      console.error("Invoice upload failed:", err);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -180,9 +269,137 @@ export function EventReport({
         </div>
       )}
 
+      {/* Hidden file input for invoice upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.png,.jpg,.jpeg"
+        className="hidden"
+        onChange={handleFileSelect}
+      />
+
       {/* Report content */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-3xl mx-auto px-8 py-10">
+          
+          {/* Report Status Banner */}
+          <div className={`mb-6 p-4 rounded-lg border ${
+            reportStatus === "complete" 
+              ? "bg-green-50 border-green-200" 
+              : reportStatus === "partial"
+              ? "bg-blue-50 border-blue-200"
+              : "bg-amber-50 border-amber-200"
+          }`}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <div className={`text-sm font-bold flex items-center gap-2 ${
+                  reportStatus === "complete" 
+                    ? "text-green-700" 
+                    : reportStatus === "partial"
+                    ? "text-blue-700"
+                    : "text-amber-700"
+                }`}>
+                  {reportStatus === "complete" ? (
+                    <>✅ INVOICE-BACKED REPORT</>
+                  ) : reportStatus === "partial" ? (
+                    <>📊 PARTIAL VERIFICATION</>
+                  ) : (
+                    <>📋 AWAITING INVOICES</>
+                  )}
+                </div>
+                <div className={`text-xs mt-1 ${
+                  reportStatus === "complete" 
+                    ? "text-green-600" 
+                    : reportStatus === "partial"
+                    ? "text-blue-600"
+                    : "text-amber-600"
+                }`}>
+                  {reportStatus === "complete" ? (
+                    <>All {costStats.total} items priced from invoices</>
+                  ) : reportStatus === "partial" ? (
+                    <>
+                      {costStats.verified} of {costStats.total} items from invoices.
+                      {costStats.awaiting > 0 && ` ${costStats.awaiting} awaiting invoice.`}
+                    </>
+                  ) : (
+                    <>Upload invoices to complete financial summary.</>
+                  )}
+                </div>
+              </div>
+              
+              {/* Invoice actions */}
+              {viewMode === "chef" && (
+                <div className="flex items-center gap-2">
+                  {invoices.length > 0 && (
+                    <button
+                      onClick={() => setShowInvoices(!showInvoices)}
+                      className="px-3 py-1.5 text-xs bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
+                    >
+                      📄 {showInvoices ? "Hide" : "View"} Invoices ({invoices.length})
+                    </button>
+                  )}
+                  {onUploadInvoice && (
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                      className={`px-3 py-1.5 text-xs rounded-lg transition flex items-center gap-1.5 ${
+                        reportStatus === "complete"
+                          ? "bg-green-600 text-white hover:bg-green-700"
+                          : "bg-amber-600 text-white hover:bg-amber-700"
+                      } disabled:opacity-50`}
+                    >
+                      {uploading ? (
+                        <>
+                          <span className="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                          Uploading...
+                        </>
+                      ) : (
+                        <>📎 {invoices.length > 0 ? "Add Invoice" : "Upload Invoice"}</>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Invoice list (expandable) */}
+            {showInvoices && invoices.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="text-xs font-medium text-gray-700 mb-2">Uploaded Invoices</div>
+                <div className="space-y-2">
+                  {invoices.map((inv) => (
+                    <div 
+                      key={inv.id} 
+                      className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-200"
+                    >
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-gray-800">{inv.name}</div>
+                        <div className="text-xs text-gray-500 flex items-center gap-2">
+                          {inv.vendor && <span>{inv.vendor}</span>}
+                          {inv.totalAmount && (
+                            <span className="font-medium text-gray-700">
+                              {currency} {inv.totalAmount.toLocaleString()}
+                            </span>
+                          )}
+                          <span>• {new Date(inv.uploadedAt).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                      {onRemoveInvoice && (
+                        <button
+                          onClick={() => onRemoveInvoice(inv.id)}
+                          className="text-gray-400 hover:text-red-500 transition p-1"
+                          title="Remove invoice"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Header */}
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-[#2F2A25] mb-2">{eventName}</h1>
@@ -267,53 +484,155 @@ export function EventReport({
             <section className="mb-8">
               <h2 className="text-sm font-semibold text-[#8B7E6A] uppercase tracking-wider mb-3 border-b border-[#E0D4BF] pb-2">
                 Financial Summary
+                {reportStatus !== "complete" && (
+                  <span className="ml-2 text-xs font-normal text-amber-600">(Awaiting invoices)</span>
+                )}
               </h2>
               <div className="space-y-2 text-sm">
                 {revenue && (
-                  <div className="flex justify-between">
-                    <span className="text-[#6F6352]">Revenue</span>
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#6F6352]">Revenue</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                        From event brief
+                      </span>
+                    </div>
                     <span className="font-medium text-[#2F2A25]">
                       {currency} {revenue.toLocaleString()}
                     </span>
                   </div>
                 )}
-                <div className="flex justify-between">
-                  <span className="text-[#6F6352]">Ingredient Cost</span>
-                  <span className="text-[#2F2A25]">
-                    {currency} {costBreakdown.subtotal.toLocaleString()}
-                  </span>
+                
+                {/* Ingredient Cost with source breakdown */}
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#6F6352]">Ingredient Cost</span>
+                    {costStats.awaiting === 0 ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                        ✓ Invoice-backed
+                      </span>
+                    ) : costStats.verified > 0 ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                        {costStats.awaiting} awaiting invoice
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                        Awaiting invoices
+                      </span>
+                    )}
+                  </div>
+                  {costStats.awaiting === 0 ? (
+                    <span className="text-[#2F2A25]">
+                      {currency} {costBreakdown.subtotal.toLocaleString()}
+                    </span>
+                  ) : (
+                    <span className="text-[#A89D8A]">—</span>
+                  )}
                 </div>
-                {costBreakdown.staffCost && (
-                  <div className="flex justify-between">
-                    <span className="text-[#6F6352]">Staff Cost</span>
+                
+                {/* Staff Cost */}
+                {costBreakdown.staffCost !== undefined && costBreakdown.staffCost > 0 && (
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#6F6352]">Staff Cost</span>
+                      {costBreakdown.staffCostSource === "invoice" ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                          ✓ From invoice
+                        </span>
+                      ) : costBreakdown.staffCostSource === "manual" ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                          Manual entry
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                          Awaiting invoice
+                        </span>
+                      )}
+                    </div>
                     <span className="text-[#2F2A25]">
                       {currency} {costBreakdown.staffCost.toLocaleString()}
                     </span>
                   </div>
                 )}
-                {costBreakdown.transportCost && (
-                  <div className="flex justify-between">
-                    <span className="text-[#6F6352]">Transport</span>
+                
+                {/* Transport Cost */}
+                {costBreakdown.transportCost !== undefined && costBreakdown.transportCost > 0 && (
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#6F6352]">Transport</span>
+                      {costBreakdown.transportCostSource === "invoice" ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                          ✓ From invoice
+                        </span>
+                      ) : costBreakdown.transportCostSource === "manual" ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                          Manual entry
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                          Awaiting invoice
+                        </span>
+                      )}
+                    </div>
                     <span className="text-[#2F2A25]">
                       {currency} {costBreakdown.transportCost.toLocaleString()}
                     </span>
                   </div>
                 )}
-                <div className="flex justify-between pt-2 border-t border-[#E0D4BF]">
-                  <span className="text-[#6F6352]">Total Cost</span>
-                  <span className="font-medium text-[#2F2A25]">
-                    {currency} {costBreakdown.total.toLocaleString()}
-                  </span>
-                </div>
-                {margin !== null && (
-                  <div className="flex justify-between">
-                    <span className="text-[#6F6352]">Net Margin</span>
-                    <span className={`font-bold ${marginPercent && marginPercent >= 25 ? "text-green-600" : "text-amber-600"}`}>
+                
+                {/* Total Cost - only show when complete */}
+                {reportStatus === "complete" ? (
+                  <div className="flex justify-between items-center pt-2 border-t border-[#E0D4BF]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#6F6352]">Total Cost</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                        ✓ Invoice-backed
+                      </span>
+                    </div>
+                    <span className="font-medium text-[#2F2A25]">
+                      {currency} {costBreakdown.total.toLocaleString()}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex justify-between items-center pt-2 border-t border-[#E0D4BF]">
+                    <span className="text-[#6F6352]">Total Cost</span>
+                    <span className="text-[#A89D8A]">Awaiting invoices</span>
+                  </div>
+                )}
+                
+                {/* Net Margin - only show when complete */}
+                {reportStatus === "complete" && margin !== null && (
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#6F6352]">Net Margin</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                        Revenue − Cost
+                      </span>
+                    </div>
+                    <span className="font-bold text-[#2F2A25]">
                       {currency} {margin.toLocaleString()} ({marginPercent}%)
                     </span>
                   </div>
                 )}
+                {reportStatus !== "complete" && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-[#6F6352]">Net Margin</span>
+                    <span className="text-[#A89D8A]">Available after invoices uploaded</span>
+                  </div>
+                )}
               </div>
+              
+              {/* Incomplete notice */}
+              {reportStatus !== "complete" && (
+                <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-center gap-2 text-xs text-amber-700">
+                    <span>🔒</span>
+                    <span>
+                      <strong>Awaiting invoices:</strong> Upload invoices to complete the financial summary.
+                    </span>
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
@@ -370,5 +689,5 @@ export function EventReport({
   );
 }
 
-export type { EventReportProps };
+export type { EventReportProps, EventInvoice, CostItemSource };
 
